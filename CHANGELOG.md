@@ -1,9 +1,7 @@
-# Change Log
+# Changelog
 
 All notable changes to the "vscode-at-mention-bridge" extension will be documented in this file.
 
-Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
+## [0.0.1] - 2026-06-25
 
-## [Unreleased]
-
-- Initial release
+- Initial implementation with copy/insert commands, configurable templates, terminal target linking, context menus, status bar target selection, tests, docs, icon, and CI packaging workflow.

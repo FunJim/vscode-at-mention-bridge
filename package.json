@@ -1,23 +1,243 @@
 {
   "name": "vscode-at-mention-bridge",
-  "displayName": "AtMentionBridge",
-  "description": "",
+  "displayName": "At Mention Bridge",
+  "description": "Copy and insert AI-agent @-mention references for files, folders, and editor selections.",
   "version": "0.0.1",
+  "publisher": "funjim",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FunJim/vscode-at-mention-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FunJim/vscode-at-mention-bridge/issues"
+  },
+  "homepage": "https://github.com/FunJim/vscode-at-mention-bridge#readme",
+  "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.120.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "ai",
+    "agent",
+    "claude",
+    "codex",
+    "terminal",
+    "at-mention"
+  ],
+  "activationEvents": [
+    "onCommand:vscode-at-mention-bridge.copyReference",
+    "onCommand:vscode-at-mention-bridge.copyReferenceFromExplorer",
+    "onCommand:vscode-at-mention-bridge.copyReferenceAs",
+    "onCommand:vscode-at-mention-bridge.copyReference.chooseTemplate",
+    "onCommand:vscode-at-mention-bridge.copyReference.claudeStyle",
+    "onCommand:vscode-at-mention-bridge.copyReference.codexStyle",
+    "onCommand:vscode-at-mention-bridge.insertReference",
+    "onCommand:vscode-at-mention-bridge.insertReferenceFromExplorer",
+    "onCommand:vscode-at-mention-bridge.insertReferenceTo",
+    "onCommand:vscode-at-mention-bridge.linkActiveTerminal",
+    "onCommand:vscode-at-mention-bridge.selectTarget",
+    "onCommand:vscode-at-mention-bridge.nextTarget",
+    "onCommand:vscode-at-mention-bridge.selectDefaultTemplate",
+    "onCommand:vscode-at-mention-bridge.showLogs",
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "vscode-at-mention-bridge.helloWorld",
-        "title": "Hello World"
+        "command": "vscode-at-mention-bridge.copyReference",
+        "title": "Copy @-Mention Reference",
+        "category": "At Mention Bridge",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.copyReferenceFromExplorer",
+        "title": "Copy @-Mention Reference",
+        "category": "At Mention Bridge",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.copyReferenceAs",
+        "title": "Copy @-Mention Reference As...",
+        "category": "At Mention Bridge",
+        "icon": "$(symbol-string)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.copyReference.chooseTemplate",
+        "title": "Choose Template...",
+        "category": "At Mention Bridge",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.copyReference.claudeStyle",
+        "title": "Claude Style",
+        "category": "At Mention Bridge"
+      },
+      {
+        "command": "vscode-at-mention-bridge.copyReference.codexStyle",
+        "title": "Codex Style",
+        "category": "At Mention Bridge"
+      },
+      {
+        "command": "vscode-at-mention-bridge.insertReference",
+        "title": "Insert @-Mention Reference",
+        "category": "At Mention Bridge",
+        "icon": "$(send)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.insertReferenceFromExplorer",
+        "title": "Insert @-Mention Reference",
+        "category": "At Mention Bridge",
+        "icon": "$(send)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.insertReferenceTo",
+        "title": "Insert @-Mention Reference To...",
+        "category": "At Mention Bridge",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.linkActiveTerminal",
+        "title": "Link Active Terminal",
+        "category": "At Mention Bridge",
+        "icon": "$(link)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.selectTarget",
+        "title": "Select Target Agent",
+        "category": "At Mention Bridge",
+        "icon": "$(target)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.nextTarget",
+        "title": "Next Target Agent",
+        "category": "At Mention Bridge",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.selectDefaultTemplate",
+        "title": "Select Default Template",
+        "category": "At Mention Bridge",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "vscode-at-mention-bridge.showLogs",
+        "title": "Show Logs",
+        "category": "At Mention Bridge",
+        "icon": "$(output)"
       }
-    ]
+    ],
+    "keybindings": [
+      {
+        "command": "vscode-at-mention-bridge.copyReference",
+        "key": "alt+ctrl+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "vscode-at-mention-bridge.copyReferenceFromExplorer",
+        "key": "alt+ctrl+k",
+        "mac": "cmd+alt+k",
+        "when": "filesExplorerFocus"
+      },
+      {
+        "command": "vscode-at-mention-bridge.insertReference",
+        "key": "alt+k",
+        "mac": "alt+k",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "vscode-at-mention-bridge.insertReferenceFromExplorer",
+        "key": "alt+k",
+        "mac": "alt+k",
+        "when": "filesExplorerFocus"
+      }
+    ],
+    "configuration": {
+      "title": "At Mention Bridge",
+      "properties": {
+        "atMentionBridge.defaultTemplate": {
+          "type": "string",
+          "default": "claudeStyle",
+          "markdownDescription": "Template name used by default when copying or inserting references. Use the **At Mention Bridge: Select Default Template** command to choose from keys in `atMentionBridge.templates`."
+        },
+        "atMentionBridge.templates": {
+          "type": "object",
+          "default": {
+            "claudeStyle": "@${relativePath}${locationSuffix}",
+            "codexStyle": "[${fileName}${locationSuffix}](${absolutePath}${locationSuffix})"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Named JavaScript template-literal strings for rendering references. Built-in templates: `claudeStyle` renders `@${relativePath}${locationSuffix}` and `codexStyle` renders `[${fileName}${locationSuffix}](${absolutePath}${locationSuffix})`. Available variables: `${relativePath}`, `${absolutePath}`, `${fileName}`, `${locationSuffix}`, `${lineStart}`, `${lineEnd}`, and `${isDirectory}`. Only use templates you trust."
+        },
+        "atMentionBridge.autoLinkActiveAgentTerminal": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Automatically link the active terminal when it appears to run a supported agent CLI."
+        },
+        "atMentionBridge.showCopyNotifications": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a short status-bar message after copying a reference."
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "vscode-at-mention-bridge.copyReference",
+          "when": "resourceScheme == file",
+          "group": "navigation@50"
+        },
+        {
+          "command": "vscode-at-mention-bridge.copyReferenceAs",
+          "when": "resourceScheme == file",
+          "group": "navigation@51"
+        },
+        {
+          "command": "vscode-at-mention-bridge.insertReferenceTo",
+          "when": "resourceScheme == file",
+          "group": "navigation@52"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "vscode-at-mention-bridge.copyReference",
+          "when": "resourceScheme == file",
+          "group": "navigation@50"
+        },
+        {
+          "command": "vscode-at-mention-bridge.copyReferenceAs",
+          "when": "resourceScheme == file",
+          "group": "navigation@51"
+        },
+        {
+          "command": "vscode-at-mention-bridge.insertReferenceTo",
+          "when": "resourceScheme == file",
+          "group": "navigation@52"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "vscode-at-mention-bridge.copyReferenceFromExplorer",
+          "when": "false"
+        },
+        {
+          "command": "vscode-at-mention-bridge.insertReferenceFromExplorer",
+          "when": "false"
+        },
+        {
+          "command": "vscode-at-mention-bridge.copyReference.chooseTemplate",
+          "when": "false"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -31,7 +251,8 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "package:vsix": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/vscode": "^1.120.0",
@@ -43,6 +264,7 @@
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
     "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.2"
   }
 }
