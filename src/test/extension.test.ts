@@ -228,11 +228,16 @@ suite('At Mention Bridge', () => {
 		const subscriptions: vscode.Disposable[] = [];
 		const shownTerminals: string[] = [];
 		const quickPickItems: vscode.QuickPickItem[] = [];
+		const quickPickActiveItems: vscode.QuickPickItem[][] = [];
 		const firstTerminal = createTerminalStub('codex', () => {}, undefined, () => shownTerminals.push('codex'));
 		const secondTerminal = createTerminalStub('claude', () => {}, undefined, () => shownTerminals.push('claude'));
-		const restoreQuickPick = stubShowQuickPick(item => {
-			quickPickItems.push(item);
-			return item.description === 'claude';
+		const restoreQuickPick = stubCreateQuickPick({
+			onShow: quickPick => {
+				quickPickItems.push(...quickPick.items);
+				quickPickActiveItems.push([...quickPick.activeItems]);
+				quickPick.selectedItems = quickPick.items.filter(item => item.description === 'codex');
+				quickPick.accept();
+			},
 		});
 		const manager = new TerminalTargetManager(
 			createContextStub(subscriptions),
@@ -247,16 +252,26 @@ suite('At Mention Bridge', () => {
 		try {
 			startEmitter.fire(createShellExecutionEvent(firstTerminal, 'codex'));
 			startEmitter.fire(createShellExecutionEvent(secondTerminal, 'claude'));
+			(manager as unknown as {
+				addTarget: (terminal: vscode.Terminal, agent: AgentDefinition, source: 'process', pid: number) => void;
+			}).addTarget(firstTerminal, detectAgentFromCommand('codex')!, 'process', 200);
+			(manager as unknown as {
+				addTarget: (terminal: vscode.Terminal, agent: AgentDefinition, source: 'process', pid: number) => void;
+			}).addTarget(secondTerminal, detectAgentFromCommand('claude')!, 'process', 100);
 
 			await manager.selectTarget();
 
-			assert.deepStrictEqual(shownTerminals, ['claude']);
+			assert.deepStrictEqual(shownTerminals, ['codex']);
 			assert.deepStrictEqual(
 				quickPickItems.map(item => ({ label: item.label, description: item.description, detail: item.detail })),
 				[
-					{ label: '$(terminal) OpenAI Codex CLI', description: 'codex', detail: 'Active terminal' },
-					{ label: '$(terminal) Claude Code', description: 'claude', detail: 'Current target' },
+					{ label: '$(terminal) Claude Code', description: 'claude', detail: 'Current target · PID 100' },
+					{ label: '$(terminal) OpenAI Codex CLI', description: 'codex', detail: 'Active terminal · PID 200' },
 				],
+			);
+			assert.deepStrictEqual(
+				quickPickActiveItems.map(items => items.map(item => ({ label: item.label, description: item.description }))),
+				[[{ label: '$(terminal) Claude Code', description: 'claude' }]],
 			);
 		} finally {
 			restoreQuickPick();
@@ -545,12 +560,56 @@ function stubShowInformationMessage(messages: string[]): () => void {
 	};
 }
 
-function stubShowQuickPick<T extends vscode.QuickPickItem>(pick: (item: T) => boolean): () => void {
-	const original = vscode.window.showQuickPick;
+function stubCreateQuickPick(options: { onShow: (quickPick: TestQuickPick<vscode.QuickPickItem>) => void }): () => void {
+	const original = vscode.window.createQuickPick;
 	(vscode.window as unknown as {
-		showQuickPick: (items: T[]) => Thenable<T | undefined>;
-	}).showQuickPick = (items: T[]) => Promise.resolve(items.find(pick));
+		createQuickPick: <T extends vscode.QuickPickItem>() => vscode.QuickPick<T>;
+	}).createQuickPick = <T extends vscode.QuickPickItem>() => new TestQuickPick<T>(quickPick => {
+		options.onShow(quickPick as unknown as TestQuickPick<vscode.QuickPickItem>);
+	}) as unknown as vscode.QuickPick<T>;
 	return () => {
-		(vscode.window as unknown as { showQuickPick: typeof original }).showQuickPick = original;
+		(vscode.window as unknown as { createQuickPick: typeof original }).createQuickPick = original;
 	};
+}
+
+class TestQuickPick<T extends vscode.QuickPickItem> implements Partial<vscode.QuickPick<T>> {
+	value = '';
+	placeholder: string | undefined;
+	prompt: string | undefined;
+	buttons: readonly vscode.QuickInputButton[] = [];
+	items: readonly T[] = [];
+	canSelectMany = false;
+	matchOnDescription = false;
+	matchOnDetail = false;
+	keepScrollPosition: boolean | undefined;
+	activeItems: readonly T[] = [];
+	selectedItems: readonly T[] = [];
+	title: string | undefined;
+	step: number | undefined;
+	totalSteps: number | undefined;
+	enabled = true;
+	busy = false;
+	ignoreFocusOut = false;
+	onDidChangeValue = new vscode.EventEmitter<string>().event;
+	private readonly acceptEmitter = new vscode.EventEmitter<void>();
+	readonly onDidAccept = this.acceptEmitter.event;
+	onDidTriggerButton = new vscode.EventEmitter<vscode.QuickInputButton>().event;
+	onDidTriggerItemButton = new vscode.EventEmitter<vscode.QuickPickItemButtonEvent<T>>().event;
+	onDidChangeActive = new vscode.EventEmitter<readonly T[]>().event;
+	onDidChangeSelection = new vscode.EventEmitter<readonly T[]>().event;
+	onDidHide = new vscode.EventEmitter<void>().event;
+
+	constructor(private readonly onShow: (quickPick: TestQuickPick<T>) => void) {}
+
+	show(): void {
+		this.onShow(this);
+	}
+
+	hide(): void {}
+
+	dispose(): void {}
+
+	accept(): void {
+		this.acceptEmitter.fire();
+	}
 }

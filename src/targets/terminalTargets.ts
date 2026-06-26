@@ -30,6 +30,10 @@ interface ProcessScannerApi {
 	findExistingPids(pids: readonly number[]): Promise<Set<number>>;
 }
 
+interface TargetQuickPickItem extends vscode.QuickPickItem {
+	readonly target: TargetRecord;
+}
+
 export class TerminalTargetManager implements vscode.Disposable {
 	private readonly targets = new Map<string, TargetRecord>();
 	private readonly terminalIds = new WeakMap<vscode.Terminal, number>();
@@ -94,11 +98,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 			detail: this.targetDetail(target, target.key === activeTarget?.key),
 			target,
 		}));
-		const selected = await vscode.window.showQuickPick(items, {
-			placeHolder: 'Select the terminal target for inserted @-mention references',
-			matchOnDescription: true,
-			matchOnDetail: true,
-		});
+		const selected = await this.showTargetQuickPick(items, activeTarget);
 
 		if (!selected) {
 			return;
@@ -353,7 +353,61 @@ export class TerminalTargetManager implements vscode.Disposable {
 				targets.set(key, target);
 			}
 		}
-		return [...targets.values()];
+		return [...targets.values()].sort((first, second) => this.compareTargetsByPid(first, second));
+	}
+
+	private showTargetQuickPick(items: readonly TargetQuickPickItem[], activeTarget: TargetRecord | undefined): Promise<TargetQuickPickItem | undefined> {
+		return new Promise(resolve => {
+			const quickPick = vscode.window.createQuickPick<TargetQuickPickItem>();
+			let didResolve = false;
+			const disposables: vscode.Disposable[] = [];
+			const finish = (selected: TargetQuickPickItem | undefined) => {
+				if (didResolve) {
+					return;
+				}
+				didResolve = true;
+				for (const disposable of disposables) {
+					disposable.dispose();
+				}
+				quickPick.dispose();
+				resolve(selected);
+			};
+
+			quickPick.placeholder = 'Select the terminal target for inserted @-mention references';
+			quickPick.matchOnDescription = true;
+			quickPick.matchOnDetail = true;
+			quickPick.items = items;
+
+			const currentItem = activeTarget ? items.find(item => item.target.key === activeTarget.key) : undefined;
+			if (currentItem) {
+				quickPick.activeItems = [currentItem];
+			}
+
+			disposables.push(
+				quickPick.onDidAccept(() => finish(quickPick.selectedItems[0] ?? quickPick.activeItems[0])),
+				quickPick.onDidHide(() => finish(undefined)),
+			);
+			quickPick.show();
+		});
+	}
+
+	private compareTargetsByPid(first: TargetRecord, second: TargetRecord): number {
+		const firstPid = first.pid ?? Number.POSITIVE_INFINITY;
+		const secondPid = second.pid ?? Number.POSITIVE_INFINITY;
+		if (firstPid !== secondPid) {
+			return firstPid - secondPid;
+		}
+
+		return this.targetSortLabel(first).localeCompare(this.targetSortLabel(second));
+	}
+
+	private targetSortLabel(target: TargetRecord): string {
+		return [
+			target.agent.label,
+			target.terminal.name,
+			target.tmuxPaneId ?? '',
+			target.key,
+		].join('\u0000');
 	}
 
 	private selectableKeyFor(target: TargetRecord): string {
