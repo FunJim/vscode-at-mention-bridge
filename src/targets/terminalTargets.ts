@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AgentDefinition, detectAgentFromCommand } from '../core/agents';
 import { getConfiguration } from '../core/configuration';
 import { Logger } from '../core/logger';
-import { ProcessScanner, sendTextToTmuxPane } from './processScanner';
+import { ProcessAgentMatch, ProcessScanner, sendTextToTmuxPane } from './processScanner';
 
 export interface TargetRecord {
 	readonly key: string;
@@ -24,11 +24,17 @@ export interface TerminalWindowApi {
 	createStatusBarItem(id: string, alignment?: vscode.StatusBarAlignment, priority?: number): vscode.StatusBarItem;
 }
 
+interface ProcessScannerApi {
+	findAgentProcesses(rootPid: number): Promise<ProcessAgentMatch[]>;
+	processExists(pid: number): Promise<boolean>;
+	findExistingPids(pids: readonly number[]): Promise<Set<number>>;
+}
+
 export class TerminalTargetManager implements vscode.Disposable {
 	private readonly targets = new Map<string, TargetRecord>();
-	private readonly scanner = new ProcessScanner();
 	private readonly terminalIds = new WeakMap<vscode.Terminal, number>();
-	private readonly pruneInterval: ReturnType<typeof setInterval>;
+	private readonly inspectingTerminals = new WeakSet<vscode.Terminal>();
+	private readonly refreshInterval: ReturnType<typeof setInterval>;
 	private activeKey: string | undefined;
 	private persistedActiveKey: string | undefined;
 	private nextTerminalId = 1;
@@ -39,16 +45,17 @@ export class TerminalTargetManager implements vscode.Disposable {
 		private readonly context: vscode.ExtensionContext,
 		private readonly logger: Logger,
 		private readonly terminalApi: TerminalWindowApi = vscode.window,
+		private readonly scanner: ProcessScannerApi = new ProcessScanner(),
 	) {
 		this.statusBarItem = this.terminalApi.createStatusBarItem('target', vscode.StatusBarAlignment.Right, 90);
 		this.statusBarItem.command = 'vscode-at-mention-bridge.selectTarget';
 		this.statusBarItem.name = 'At Mention Bridge Target';
-		this.pruneInterval = setInterval(() => {
-			void this.pruneInactiveProcessTargets();
-		}, 3000);
+		this.refreshInterval = setInterval(() => {
+			void this.refreshProcessTargets();
+		}, 2000);
 
 		this.disposables.push(
-			new vscode.Disposable(() => clearInterval(this.pruneInterval)),
+			new vscode.Disposable(() => clearInterval(this.refreshInterval)),
 			this.statusBarItem,
 			this.terminalApi.onDidOpenTerminal(terminal => this.inspectTerminal(terminal)),
 			this.terminalApi.onDidCloseTerminal(terminal => this.removeTerminal(terminal)),
@@ -191,6 +198,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 	private onShellExecution(event: vscode.TerminalShellExecutionStartEvent): void {
 		const agent = detectAgentFromCommand(event.execution.commandLine.value);
 		if (!agent) {
+			void this.inspectTerminal(event.terminal);
 			return;
 		}
 
@@ -216,6 +224,10 @@ export class TerminalTargetManager implements vscode.Disposable {
 	}
 
 	private async inspectTerminal(terminal: vscode.Terminal): Promise<void> {
+		if (this.inspectingTerminals.has(terminal)) {
+			return;
+		}
+		this.inspectingTerminals.add(terminal);
 		try {
 			const processId = await terminal.processId;
 			if (!processId) {
@@ -224,7 +236,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 			const matches = await this.scanner.findAgentProcesses(processId);
 			for (const match of matches) {
 				this.addTarget(terminal, match.agent, 'process', match.pid, match.tmuxPaneId);
-				if (!this.activeKey) {
+				if (!this.activeKey || this.shouldAutoActivateTerminal(terminal)) {
 					this.activeKey = this.keyFor(terminal, match.agent.id, match.tmuxPaneId, match.pid);
 					void this.persistActiveKey();
 				}
@@ -232,6 +244,8 @@ export class TerminalTargetManager implements vscode.Disposable {
 			this.updateStatusBar();
 		} catch (error) {
 			this.logger.warn('Unable to inspect terminal process tree', error);
+		} finally {
+			this.inspectingTerminals.delete(terminal);
 		}
 	}
 
@@ -289,6 +303,27 @@ export class TerminalTargetManager implements vscode.Disposable {
 			await this.persistActiveKey();
 		}
 		this.updateStatusBar();
+	}
+
+	private async refreshProcessTargets(): Promise<void> {
+		if (getConfiguration().autoLinkActiveAgentTerminal) {
+			for (const terminal of this.terminalsToInspect()) {
+				await this.inspectTerminal(terminal);
+			}
+		}
+		await this.pruneInactiveProcessTargets();
+	}
+
+	private terminalsToInspect(): vscode.Terminal[] {
+		const terminals = new Set(this.terminalApi.terminals);
+		if (this.terminalApi.activeTerminal) {
+			terminals.add(this.terminalApi.activeTerminal);
+		}
+		return [...terminals];
+	}
+
+	private shouldAutoActivateTerminal(terminal: vscode.Terminal): boolean {
+		return getConfiguration().autoLinkActiveAgentTerminal && this.terminalApi.activeTerminal === terminal;
 	}
 
 	private removeTerminal(terminal: vscode.Terminal): void {

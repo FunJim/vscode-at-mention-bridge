@@ -8,7 +8,8 @@ import { buildReferenceContext, selectionToLocation } from '../core/references';
 import { renderTemplate } from '../core/templates';
 import { truncateMiddle } from '../core/text';
 import { Logger } from '../core/logger';
-import { TerminalTargetManager } from '../targets/terminalTargets';
+import { ProcessAgentMatch } from '../targets/processScanner';
+import { TerminalTargetManager, TerminalWindowApi } from '../targets/terminalTargets';
 
 suite('At Mention Bridge', () => {
 	test('renders built-in claudeStyle and codexStyle templates for selected lines', async () => {
@@ -181,6 +182,47 @@ suite('At Mention Bridge', () => {
 		startEmitter.dispose();
 	});
 
+	test('discovers wrapped agents by rescanning after an unrecognized shell command starts', async () => {
+		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
+		const subscriptions: vscode.Disposable[] = [];
+		const terminal = createTerminalStub('wrapped-agent', () => {}, 123);
+		const claude = detectAgentFromCommand('/path/to/claude.exe')!;
+		const scanner = new FakeProcessScanner();
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			createTerminalApiStub({
+				terminals: [terminal],
+				activeTerminal: terminal,
+				onDidStartTerminalShellExecution: startEmitter.event,
+			}),
+			scanner,
+		);
+
+		await flushPromises();
+		assert.strictEqual(manager.getTargetsForTesting().length, 0);
+
+		scanner.matches = [{
+			agent: claude,
+			pid: 456,
+			commandLine: '/internal/wrapper/node_modules/@anthropic-ai/claude-code/bin/claude.exe --settings {}',
+		}];
+		startEmitter.fire(createShellExecutionEvent(terminal, 'company-wrapper-command'));
+		await flushPromises();
+
+		assert.deepStrictEqual(
+			manager.getTargetsForTesting().map(target => ({ id: target.agent.id, source: target.source, pid: target.pid })),
+			[{ id: 'claude', source: 'process', pid: 456 }],
+		);
+		assert.deepStrictEqual(scanner.scannedRootPids, [123, 123]);
+
+		manager.dispose();
+		for (const subscription of subscriptions) {
+			subscription.dispose();
+		}
+		startEmitter.dispose();
+	});
+
 	test('next target warns when no targets have been discovered', async () => {
 		const subscriptions: vscode.Disposable[] = [];
 		const messages: string[] = [];
@@ -299,6 +341,20 @@ function createShellExecutionEvent(terminal: vscode.Terminal, commandLine: strin
 	} as vscode.TerminalShellExecutionStartEvent & vscode.TerminalShellExecutionEndEvent;
 }
 
+function createTerminalApiStub(overrides: Partial<TerminalWindowApi> = {}): TerminalWindowApi {
+	return {
+		terminals: [],
+		activeTerminal: undefined,
+		onDidOpenTerminal: () => new vscode.Disposable(() => {}),
+		onDidCloseTerminal: () => new vscode.Disposable(() => {}),
+		onDidChangeActiveTerminal: () => new vscode.Disposable(() => {}),
+		onDidStartTerminalShellExecution: () => new vscode.Disposable(() => {}),
+		onDidEndTerminalShellExecution: () => new vscode.Disposable(() => {}),
+		createStatusBarItem: () => createStatusBarItemStub(),
+		...overrides,
+	};
+}
+
 function createContextStub(subscriptions: vscode.Disposable[]): vscode.ExtensionContext {
 	const state = new Map<string, unknown>();
 	return {
@@ -317,6 +373,30 @@ function createStatusBarItemStub(): vscode.StatusBarItem {
 		show: () => {},
 		dispose: () => {},
 	} as vscode.StatusBarItem;
+}
+
+function flushPromises(): Promise<void> {
+	return new Promise(resolve => setImmediate(resolve));
+}
+
+class FakeProcessScanner {
+	readonly scannedRootPids: number[] = [];
+
+	constructor(public matches: ProcessAgentMatch[] = []) {}
+
+	async findAgentProcesses(rootPid: number): Promise<ProcessAgentMatch[]> {
+		this.scannedRootPids.push(rootPid);
+		return this.matches;
+	}
+
+	async processExists(pid: number): Promise<boolean> {
+		return this.matches.some(match => match.pid === pid);
+	}
+
+	async findExistingPids(pids: readonly number[]): Promise<Set<number>> {
+		const wanted = new Set(pids);
+		return new Set(this.matches.flatMap(match => match.pid && wanted.has(match.pid) ? [match.pid] : []));
+	}
 }
 
 function stubShowWarningMessage(messages: string[]): () => void {
