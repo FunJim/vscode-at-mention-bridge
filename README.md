@@ -10,7 +10,7 @@ At Mention Bridge copies and inserts references that agent CLIs can understand. 
 - Insert the rendered reference into a linked VS Code integrated terminal without executing it.
 - Use built-in Claude-style and Codex-style templates.
 - Add your own named templates with VS Code settings.
-- Link, select, and cycle terminal agent targets from the Command Palette or status bar.
+- Select and cycle terminal agent targets from the Command Palette or status bar.
 - Detect supported agent commands from terminal shell integration, terminal names, local process trees, and tmux panes where available.
 - Use editor and Explorer context menus, including "Copy @-Mention Reference As..." for choosing any configured template.
 
@@ -20,7 +20,6 @@ At Mention Bridge copies and inserts references that agent CLIs can understand. 
 | --- | --- | --- |
 | Copy @-Mention Reference | `Option+Command+K` | `Alt+Ctrl+K` |
 | Insert @-Mention Reference | `Option+K` | `Alt+K` |
-| Link Active Terminal | Command Palette | Command Palette |
 | Select Target Agent | Command Palette or status bar | Command Palette or status bar |
 | Next Target Agent | Command Palette | Command Palette |
 | Select Default Template | Command Palette | Command Palette |
@@ -92,7 +91,7 @@ Only use templates you trust. They are evaluated as JavaScript template literals
 
 Supported built-in agents include Claude Code, OpenAI Codex CLI, Gemini CLI, OpenCode, Aider, GitHub Copilot CLI, Goose, Crush, Amp, Qwen Code, Kimi Code, CodeBuddy Code, Kilo Code, Qoder CLI, Trae Agent, and Antigravity.
 
-Discovery uses the public VS Code terminal API first, then best-effort local process scanning. If discovery cannot identify the target terminal, run **At Mention Bridge: Link Active Terminal** while the agent terminal is focused.
+Discovery uses the public VS Code terminal API first, then best-effort local process scanning. If discovery cannot identify the target terminal, start the supported agent command in an integrated terminal and use **At Mention Bridge: Select Target Agent** after it is detected.
 
 ## Settings
 

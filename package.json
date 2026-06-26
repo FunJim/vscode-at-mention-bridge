@@ -33,12 +33,9 @@
     "onCommand:vscode-at-mention-bridge.copyReferenceFromExplorer",
     "onCommand:vscode-at-mention-bridge.copyReferenceAs",
     "onCommand:vscode-at-mention-bridge.copyReference.chooseTemplate",
-    "onCommand:vscode-at-mention-bridge.copyReference.claudeStyle",
-    "onCommand:vscode-at-mention-bridge.copyReference.codexStyle",
     "onCommand:vscode-at-mention-bridge.insertReference",
     "onCommand:vscode-at-mention-bridge.insertReferenceFromExplorer",
     "onCommand:vscode-at-mention-bridge.insertReferenceTo",
-    "onCommand:vscode-at-mention-bridge.linkActiveTerminal",
     "onCommand:vscode-at-mention-bridge.selectTarget",
     "onCommand:vscode-at-mention-bridge.nextTarget",
     "onCommand:vscode-at-mention-bridge.selectDefaultTemplate",
@@ -73,16 +70,6 @@
         "icon": "$(list-selection)"
       },
       {
-        "command": "vscode-at-mention-bridge.copyReference.claudeStyle",
-        "title": "Claude Style",
-        "category": "At Mention Bridge"
-      },
-      {
-        "command": "vscode-at-mention-bridge.copyReference.codexStyle",
-        "title": "Codex Style",
-        "category": "At Mention Bridge"
-      },
-      {
         "command": "vscode-at-mention-bridge.insertReference",
         "title": "Insert @-Mention Reference",
         "category": "At Mention Bridge",
@@ -99,12 +86,6 @@
         "title": "Insert @-Mention Reference To...",
         "category": "At Mention Bridge",
         "icon": "$(terminal)"
-      },
-      {
-        "command": "vscode-at-mention-bridge.linkActiveTerminal",
-        "title": "Link Active Terminal",
-        "category": "At Mention Bridge",
-        "icon": "$(link)"
       },
       {
         "command": "vscode-at-mention-bridge.selectTarget",

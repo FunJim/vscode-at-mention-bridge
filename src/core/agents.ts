@@ -41,18 +41,9 @@ export const AGENTS: readonly AgentDefinition[] = [
 	{ id: 'agy', label: 'Antigravity', executables: ['agy', 'agy.exe', 'agy.cmd'] },
 ];
 
-export function findAgentById(id: string | undefined): AgentDefinition | undefined {
-	return AGENTS.find(agent => agent.id === id);
-}
-
 export function detectAgentFromCommand(commandLine: string): AgentDefinition | undefined {
 	const tokens = commandLine.split(/[\s"'`]+/).filter(Boolean);
 	return AGENTS.find(agent => agent.executables.some(executable => tokens.some(token => executableMatchesToken(executable, token))));
-}
-
-export function detectAgentFromTerminalName(name: string): AgentDefinition | undefined {
-	const normalizedName = name.toLowerCase();
-	return AGENTS.find(agent => agent.executables.some(executable => normalizedName.includes(executable.toLowerCase())));
 }
 
 function executableMatchesToken(executable: string, token: string): boolean {

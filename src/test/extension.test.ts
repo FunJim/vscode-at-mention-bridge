@@ -76,7 +76,7 @@ suite('At Mention Bridge', () => {
 		const editor = await vscode.window.showTextDocument(document);
 		editor.selection = new vscode.Selection(0, 0, 2, 1);
 
-		await vscode.commands.executeCommand('vscode-at-mention-bridge.copyReference.claudeStyle', uri);
+		await vscode.commands.executeCommand('vscode-at-mention-bridge.copyReference', uri);
 
 		assert.strictEqual(await vscode.env.clipboard.readText(), '@src/targets/processScanner.ts#1-3');
 	});
@@ -88,7 +88,7 @@ suite('At Mention Bridge', () => {
 		const extensionUri = vscode.Uri.file(path.join(__dirname, '../../src/extension.ts'));
 		const scannerUri = vscode.Uri.file(path.join(__dirname, '../../src/targets/processScanner.ts'));
 
-		await vscode.commands.executeCommand('vscode-at-mention-bridge.copyReference.claudeStyle', extensionUri, [extensionUri, scannerUri]);
+		await vscode.commands.executeCommand('vscode-at-mention-bridge.copyReference', extensionUri, [extensionUri, scannerUri]);
 
 		assert.strictEqual(await vscode.env.clipboard.readText(), '@src/extension.ts @src/targets/processScanner.ts');
 	});
@@ -181,6 +181,72 @@ suite('At Mention Bridge', () => {
 		startEmitter.dispose();
 	});
 
+	test('next target warns when no targets have been discovered', async () => {
+		const subscriptions: vscode.Disposable[] = [];
+		const messages: string[] = [];
+		const restoreWarning = stubShowWarningMessage(messages);
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			{
+				terminals: [],
+				onDidOpenTerminal: () => new vscode.Disposable(() => {}),
+				onDidCloseTerminal: () => new vscode.Disposable(() => {}),
+				onDidChangeActiveTerminal: () => new vscode.Disposable(() => {}),
+				onDidStartTerminalShellExecution: () => new vscode.Disposable(() => {}),
+				onDidEndTerminalShellExecution: () => new vscode.Disposable(() => {}),
+				createStatusBarItem: () => createStatusBarItemStub(),
+			},
+		);
+
+		try {
+			await manager.nextTarget();
+
+			assert.deepStrictEqual(messages, ['No agent terminals have been discovered yet.']);
+		} finally {
+			restoreWarning();
+			manager.dispose();
+			for (const subscription of subscriptions) {
+				subscription.dispose();
+			}
+		}
+	});
+
+	test('next target notifies when there is no other target', async () => {
+		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
+		const subscriptions: vscode.Disposable[] = [];
+		const messages: string[] = [];
+		const restoreInformation = stubShowInformationMessage(messages);
+		const terminal = createTerminalStub('codex');
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			{
+				terminals: [],
+				onDidOpenTerminal: () => new vscode.Disposable(() => {}),
+				onDidCloseTerminal: () => new vscode.Disposable(() => {}),
+				onDidChangeActiveTerminal: () => new vscode.Disposable(() => {}),
+				onDidStartTerminalShellExecution: startEmitter.event,
+				onDidEndTerminalShellExecution: () => new vscode.Disposable(() => {}),
+				createStatusBarItem: () => createStatusBarItemStub(),
+			},
+		);
+
+		try {
+			startEmitter.fire(createShellExecutionEvent(terminal, 'codex'));
+			await manager.nextTarget();
+
+			assert.deepStrictEqual(messages, ['No other agent terminals have been discovered yet.']);
+		} finally {
+			restoreInformation();
+			manager.dispose();
+			for (const subscription of subscriptions) {
+				subscription.dispose();
+			}
+			startEmitter.dispose();
+		}
+	});
+
 	test('inserts references with a trailing space', async () => {
 		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
 		const sentText: string[] = [];
@@ -251,4 +317,30 @@ function createStatusBarItemStub(): vscode.StatusBarItem {
 		show: () => {},
 		dispose: () => {},
 	} as vscode.StatusBarItem;
+}
+
+function stubShowWarningMessage(messages: string[]): () => void {
+	const original = vscode.window.showWarningMessage;
+	(vscode.window as unknown as {
+		showWarningMessage: (message: string) => Thenable<undefined>;
+	}).showWarningMessage = (message: string) => {
+		messages.push(message);
+		return Promise.resolve(undefined);
+	};
+	return () => {
+		(vscode.window as unknown as { showWarningMessage: typeof original }).showWarningMessage = original;
+	};
+}
+
+function stubShowInformationMessage(messages: string[]): () => void {
+	const original = vscode.window.showInformationMessage;
+	(vscode.window as unknown as {
+		showInformationMessage: (message: string) => Thenable<undefined>;
+	}).showInformationMessage = (message: string) => {
+		messages.push(message);
+		return Promise.resolve(undefined);
+	};
+	return () => {
+		(vscode.window as unknown as { showInformationMessage: typeof original }).showInformationMessage = original;
+	};
 }

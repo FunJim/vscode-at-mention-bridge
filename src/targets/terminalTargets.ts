@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { AGENTS, AgentDefinition, detectAgentFromCommand, detectAgentFromTerminalName, findAgentById } from '../core/agents';
+import { AgentDefinition, detectAgentFromCommand } from '../core/agents';
 import { getConfiguration } from '../core/configuration';
 import { Logger } from '../core/logger';
 import { ProcessScanner, sendTextToTmuxPane } from './processScanner';
@@ -10,7 +10,7 @@ export interface TargetRecord {
 	readonly agent: AgentDefinition;
 	readonly pid?: number;
 	readonly tmuxPaneId?: string;
-	readonly source: 'manual' | 'shellExecution' | 'process';
+	readonly source: 'shellExecution' | 'process';
 }
 
 export interface TerminalWindowApi {
@@ -73,40 +73,10 @@ export class TerminalTargetManager implements vscode.Disposable {
 		return this.selectableTargets().find(target => this.sameSelectableTarget(target, activeTarget));
 	}
 
-	async linkActiveTerminal(agentId?: string): Promise<void> {
-		const terminal = this.terminalApi.activeTerminal;
-		if (!terminal) {
-			vscode.window.showWarningMessage('Open or focus an integrated terminal before linking an agent.');
-			return;
-		}
-
-		const agent = agentId ? findAgentById(agentId) : await this.pickAgentForTerminal(terminal);
-		if (!agent) {
-			return;
-		}
-
-		const processTarget = await this.addProcessTargetForAgent(terminal, agent);
-		if (processTarget) {
-			this.activeKey = processTarget.key;
-		} else {
-			this.addTarget(terminal, agent, 'manual');
-			this.activeKey = this.keyFor(terminal, agent.id);
-		}
-		await this.persistActiveKey();
-		this.updateStatusBar();
-		vscode.window.showInformationMessage(`At Mention Bridge linked ${agent.label} in "${terminal.name}".`);
-	}
-
 	async selectTarget(): Promise<void> {
 		const targets = this.selectableTargets();
 		if (targets.length === 0) {
-			const choice = await vscode.window.showWarningMessage(
-				'No agent terminals have been discovered yet.',
-				'Link Active Terminal',
-			);
-			if (choice === 'Link Active Terminal') {
-				await this.linkActiveTerminal();
-			}
+			vscode.window.showWarningMessage('No agent terminals have been discovered yet.');
 			return;
 		}
 
@@ -133,7 +103,11 @@ export class TerminalTargetManager implements vscode.Disposable {
 	async nextTarget(): Promise<void> {
 		const targets = this.selectableTargets();
 		if (targets.length === 0) {
-			await this.selectTarget();
+			vscode.window.showWarningMessage('No agent terminals have been discovered yet.');
+			return;
+		}
+		if (targets.length === 1) {
+			vscode.window.showInformationMessage('No other agent terminals have been discovered yet.');
 			return;
 		}
 
@@ -156,12 +130,9 @@ export class TerminalTargetManager implements vscode.Disposable {
 			const choice = await vscode.window.showWarningMessage(
 				'Select an agent terminal before inserting a reference.',
 				'Select Target',
-				'Link Active Terminal',
 			);
 			if (choice === 'Select Target') {
 				await this.selectTarget();
-			} else if (choice === 'Link Active Terminal') {
-				await this.linkActiveTerminal();
 			}
 			target = this.activeTarget;
 		}
@@ -172,7 +143,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 
 		if (!await this.isTargetActive(target)) {
 			await this.removeTarget(target.key);
-			vscode.window.showWarningMessage(`${target.agent.label} is no longer running in "${target.terminal.name}". Select or link an active agent terminal.`);
+			vscode.window.showWarningMessage(`${target.agent.label} is no longer running in "${target.terminal.name}". Select an active agent terminal.`);
 			return false;
 		}
 
@@ -199,20 +170,6 @@ export class TerminalTargetManager implements vscode.Disposable {
 		for (const disposable of this.disposables) {
 			disposable.dispose();
 		}
-	}
-
-	private async pickAgentForTerminal(terminal: vscode.Terminal): Promise<AgentDefinition | undefined> {
-		const detected = detectAgentFromTerminalName(terminal.name);
-		const items = AGENTS.map(agent => ({
-			label: agent.label,
-			description: agent.id,
-			picked: agent.id === detected?.id,
-			agent,
-		}));
-		const selected = await vscode.window.showQuickPick(items, {
-			placeHolder: `Which agent is running in "${terminal.name}"?`,
-		});
-		return selected?.agent;
 	}
 
 	private onActiveTerminalChanged(terminal: vscode.Terminal | undefined): void {
@@ -252,7 +209,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 		}
 
 		for (const target of [...this.targets.values()]) {
-			if (target.terminal === event.terminal && target.agent.id === agent.id && target.source !== 'manual') {
+			if (target.terminal === event.terminal && target.agent.id === agent.id) {
 				void this.removeTarget(target.key);
 			}
 		}
@@ -292,25 +249,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 		this.logger.info('Discovered agent terminal', agent.id, terminal.name);
 	}
 
-	private async addProcessTargetForAgent(terminal: vscode.Terminal, agent: AgentDefinition): Promise<TargetRecord | undefined> {
-		const processId = await terminal.processId;
-		if (!processId) {
-			return undefined;
-		}
-
-		const match = (await this.scanner.findAgentProcesses(processId)).find(candidate => candidate.agent.id === agent.id);
-		if (!match) {
-			return undefined;
-		}
-
-		this.addTarget(terminal, match.agent, 'process', match.pid, match.tmuxPaneId);
-		return this.targets.get(this.keyFor(terminal, match.agent.id, match.tmuxPaneId, match.pid));
-	}
-
 	private async isTargetActive(target: TargetRecord): Promise<boolean> {
-		if (target.source === 'manual') {
-			return Boolean(await this.addProcessTargetForAgent(target.terminal, target.agent));
-		}
 		if (target.pid) {
 			return this.scanner.processExists(target.pid);
 		}
