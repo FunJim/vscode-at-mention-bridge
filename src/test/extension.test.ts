@@ -430,6 +430,49 @@ suite('At Mention Bridge', () => {
 		}
 	});
 
+	test('hides generic shell targets after tmux pane targets are discovered', async () => {
+		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
+		const subscriptions: vscode.Disposable[] = [];
+		const terminal = createTerminalStub('tmux', () => {}, 123);
+		const claude = detectAgentFromCommand('claude')!;
+		const scanner = new FakeProcessScanner([{
+			agent: claude,
+			pid: 46465,
+			commandLine: 'claude.exe',
+			tmuxPaneId: '%3',
+			tmuxPanePid: 45737,
+			tmuxSessionName: 'test-0',
+			tmuxWindowIndex: '2',
+			tmuxWindowName: 'node',
+			tmuxPaneIndex: '1',
+			tmuxIsActivePane: true,
+		}]);
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			createTerminalApiStub({
+				terminals: [terminal],
+				activeTerminal: terminal,
+				onDidStartTerminalShellExecution: startEmitter.event,
+			}),
+			scanner,
+		);
+
+		startEmitter.fire(createShellExecutionEvent(terminal, 'claude'));
+		await flushPromises();
+
+		assert.deepStrictEqual(
+			manager.getSelectableTargetsForTesting().map(target => ({ source: target.source, pid: target.pid, pane: target.tmuxPaneId })),
+			[{ source: 'process', pid: 46465, pane: '%3' }],
+		);
+
+		manager.dispose();
+		for (const subscription of subscriptions) {
+			subscription.dispose();
+		}
+		startEmitter.dispose();
+	});
+
 	test('next target warns when no targets have been discovered', async () => {
 		const subscriptions: vscode.Disposable[] = [];
 		const messages: string[] = [];

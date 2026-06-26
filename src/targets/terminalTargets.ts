@@ -240,6 +240,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 				return;
 			}
 			const matches = await this.scanner.findAgentProcesses(processId);
+			this.removeSupersededShellTargets(terminal, matches);
 			for (const match of matches) {
 				this.addTarget(terminal, match.agent, 'process', match.pid, match);
 				if (!this.activeKey || this.shouldAutoActivateMatch(terminal, match)) {
@@ -288,6 +289,19 @@ export class TerminalTargetManager implements vscode.Disposable {
 			void this.persistActiveKey();
 		}
 		this.logger.info('Discovered agent terminal', agent.id, terminal.name);
+	}
+
+	private removeSupersededShellTargets(terminal: vscode.Terminal, matches: readonly ProcessAgentMatch[]): void {
+		const tmuxAgentIds = new Set(matches.filter(match => match.tmuxPaneId).map(match => match.agent.id));
+		if (tmuxAgentIds.size === 0) {
+			return;
+		}
+
+		for (const [key, target] of this.targets) {
+			if (target.terminal === terminal && target.source === 'shellExecution' && !target.tmuxPaneId && tmuxAgentIds.has(target.agent.id)) {
+				this.targets.delete(key);
+			}
+		}
 	}
 
 	private async isTargetActive(target: TargetRecord): Promise<boolean> {
@@ -391,6 +405,9 @@ export class TerminalTargetManager implements vscode.Disposable {
 	private selectableTargets(): TargetRecord[] {
 		const targets = new Map<string, TargetRecord>();
 		for (const target of this.targets.values()) {
+			if (this.isSupersededShellTarget(target)) {
+				continue;
+			}
 			const key = this.selectableKeyFor(target);
 			const existing = targets.get(key);
 			if (!existing || this.isPreferredTarget(target, existing)) {
@@ -398,6 +415,18 @@ export class TerminalTargetManager implements vscode.Disposable {
 			}
 		}
 		return [...targets.values()].sort((first, second) => this.compareTargets(first, second));
+	}
+
+	private isSupersededShellTarget(target: TargetRecord): boolean {
+		if (target.source !== 'shellExecution' || target.tmuxPaneId) {
+			return false;
+		}
+		for (const candidate of this.targets.values()) {
+			if (candidate.terminal === target.terminal && candidate.agent.id === target.agent.id && candidate.tmuxPaneId) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private showTargetQuickPick(items: readonly TargetQuickPickItem[], activeTarget: TargetRecord | undefined): Promise<TargetQuickPickItem | undefined> {
