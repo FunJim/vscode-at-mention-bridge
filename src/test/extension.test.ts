@@ -223,6 +223,70 @@ suite('At Mention Bridge', () => {
 		startEmitter.dispose();
 	});
 
+	test('reveals the selected target terminal', async () => {
+		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
+		const subscriptions: vscode.Disposable[] = [];
+		const shownTerminals: string[] = [];
+		const firstTerminal = createTerminalStub('codex', () => {}, undefined, () => shownTerminals.push('codex'));
+		const secondTerminal = createTerminalStub('claude', () => {}, undefined, () => shownTerminals.push('claude'));
+		const restoreQuickPick = stubShowQuickPick(item => item.description === 'claude');
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			createTerminalApiStub({
+				terminals: [firstTerminal, secondTerminal],
+				activeTerminal: firstTerminal,
+				onDidStartTerminalShellExecution: startEmitter.event,
+			}),
+		);
+
+		try {
+			startEmitter.fire(createShellExecutionEvent(firstTerminal, 'codex'));
+			startEmitter.fire(createShellExecutionEvent(secondTerminal, 'claude'));
+
+			await manager.selectTarget();
+
+			assert.deepStrictEqual(shownTerminals, ['claude']);
+		} finally {
+			restoreQuickPick();
+			manager.dispose();
+			for (const subscription of subscriptions) {
+				subscription.dispose();
+			}
+			startEmitter.dispose();
+		}
+	});
+
+	test('reveals the next target terminal', async () => {
+		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
+		const subscriptions: vscode.Disposable[] = [];
+		const shownTerminals: string[] = [];
+		const firstTerminal = createTerminalStub('codex', () => {}, undefined, () => shownTerminals.push('codex'));
+		const secondTerminal = createTerminalStub('claude', () => {}, undefined, () => shownTerminals.push('claude'));
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			createTerminalApiStub({
+				terminals: [firstTerminal, secondTerminal],
+				activeTerminal: firstTerminal,
+				onDidStartTerminalShellExecution: startEmitter.event,
+			}),
+		);
+
+		startEmitter.fire(createShellExecutionEvent(firstTerminal, 'codex'));
+		startEmitter.fire(createShellExecutionEvent(secondTerminal, 'claude'));
+
+		await manager.nextTarget();
+
+		assert.deepStrictEqual(shownTerminals, ['codex']);
+
+		manager.dispose();
+		for (const subscription of subscriptions) {
+			subscription.dispose();
+		}
+		startEmitter.dispose();
+	});
+
 	test('next target warns when no targets have been discovered', async () => {
 		const subscriptions: vscode.Disposable[] = [];
 		const messages: string[] = [];
@@ -321,12 +385,17 @@ suite('At Mention Bridge', () => {
 	});
 });
 
-function createTerminalStub(name: string, onSendText: (text: string) => void = () => {}, processId: number | undefined = undefined): vscode.Terminal {
+function createTerminalStub(
+	name: string,
+	onSendText: (text: string) => void = () => {},
+	processId: number | undefined = undefined,
+	onShow: () => void = () => {},
+): vscode.Terminal {
 	return {
 		name,
 		processId: Promise.resolve(processId),
 		sendText: onSendText,
-		show: () => {},
+		show: onShow,
 	} as unknown as vscode.Terminal;
 }
 
@@ -422,5 +491,15 @@ function stubShowInformationMessage(messages: string[]): () => void {
 	};
 	return () => {
 		(vscode.window as unknown as { showInformationMessage: typeof original }).showInformationMessage = original;
+	};
+}
+
+function stubShowQuickPick<T extends vscode.QuickPickItem>(pick: (item: T) => boolean): () => void {
+	const original = vscode.window.showQuickPick;
+	(vscode.window as unknown as {
+		showQuickPick: (items: T[]) => Thenable<T | undefined>;
+	}).showQuickPick = (items: T[]) => Promise.resolve(items.find(pick));
+	return () => {
+		(vscode.window as unknown as { showQuickPick: typeof original }).showQuickPick = original;
 	};
 }

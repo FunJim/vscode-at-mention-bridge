@@ -102,9 +102,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 			return;
 		}
 
-		this.activeKey = selected.target.key;
-		await this.persistActiveKey();
-		this.updateStatusBar();
+		await this.activateTarget(selected.target);
 	}
 
 	async nextTarget(): Promise<void> {
@@ -121,9 +119,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 		const activeTarget = this.activeTarget;
 		const currentIndex = targets.findIndex(target => target.key === activeTarget?.key);
 		const next = targets[(currentIndex + 1) % targets.length];
-		this.activeKey = next.key;
-		await this.persistActiveKey();
-		this.updateStatusBar();
+		await this.activateTarget(next);
 	}
 
 	async insert(text: string): Promise<boolean> {
@@ -277,6 +273,13 @@ export class TerminalTargetManager implements vscode.Disposable {
 			await this.persistActiveKey();
 		}
 		this.updateStatusBar();
+	}
+
+	private async activateTarget(target: TargetRecord): Promise<void> {
+		this.activeKey = target.key;
+		await this.persistActiveKey();
+		this.updateStatusBar();
+		target.terminal.show(false);
 	}
 
 	private async pruneInactiveProcessTargets(): Promise<void> {
