@@ -89,13 +89,15 @@ export class TerminalTargetManager implements vscode.Disposable {
 
 		const activeTarget = this.activeTarget;
 		const items = targets.map(target => ({
-			label: target.agent.label,
-			description: target.terminal.name,
-			detail: target.key === activeTarget?.key ? 'Current target' : undefined,
+			label: `$(terminal) ${target.agent.label}`,
+			description: this.targetDescription(target),
+			detail: this.targetDetail(target, target.key === activeTarget?.key),
 			target,
 		}));
 		const selected = await vscode.window.showQuickPick(items, {
-			placeHolder: 'Select the terminal that should receive inserted @-mention references',
+			placeHolder: 'Select the terminal target for inserted @-mention references',
+			matchOnDescription: true,
+			matchOnDetail: true,
 		});
 
 		if (!selected) {
@@ -411,12 +413,42 @@ export class TerminalTargetManager implements vscode.Disposable {
 	private updateStatusBar(): void {
 		const target = this.activeTarget;
 		if (target) {
-			this.statusBarItem.text = `$(mention) ${target.agent.label}`;
-			this.statusBarItem.tooltip = `At Mention Bridge target: ${target.agent.label} in "${target.terminal.name}"`;
+			this.statusBarItem.text = `$(mention) ${this.statusBarTargetLabel(target)}`;
+			this.statusBarItem.tooltip = this.targetTooltip(target);
 		} else {
 			this.statusBarItem.text = '$(mention) No Agent';
-			this.statusBarItem.tooltip = 'At Mention Bridge: select an agent terminal';
+			this.statusBarItem.tooltip = 'At Mention Bridge: no terminal target selected. Click to select a discovered agent terminal.';
 		}
 		this.statusBarItem.show();
+	}
+
+	private statusBarTargetLabel(target: TargetRecord): string {
+		return [
+			target.agent.label,
+			target.pid ? `PID ${target.pid}` : undefined,
+		].filter(Boolean).join(' · ');
+	}
+
+	private targetDescription(target: TargetRecord): string {
+		return target.terminal.name;
+	}
+
+	private targetDetail(target: TargetRecord, isCurrent: boolean): string {
+		return [
+			isCurrent ? 'Current target' : undefined,
+			this.terminalApi.activeTerminal === target.terminal ? 'Active terminal' : undefined,
+			target.tmuxPaneId ? `tmux ${target.tmuxPaneId}` : undefined,
+			target.pid ? `PID ${target.pid}` : undefined,
+		].filter(Boolean).join(' · ');
+	}
+
+	private targetTooltip(target: TargetRecord): string {
+		return [
+			`At Mention Bridge target: ${target.agent.label}`,
+			`Terminal: ${target.terminal.name}`,
+			target.tmuxPaneId ? `tmux pane: ${target.tmuxPaneId}` : undefined,
+			target.pid ? `PID: ${target.pid}` : undefined,
+			'Click to select another target.',
+		].filter(Boolean).join('\n');
 	}
 }

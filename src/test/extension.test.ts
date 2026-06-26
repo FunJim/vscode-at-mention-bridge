@@ -227,9 +227,13 @@ suite('At Mention Bridge', () => {
 		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
 		const subscriptions: vscode.Disposable[] = [];
 		const shownTerminals: string[] = [];
+		const quickPickItems: vscode.QuickPickItem[] = [];
 		const firstTerminal = createTerminalStub('codex', () => {}, undefined, () => shownTerminals.push('codex'));
 		const secondTerminal = createTerminalStub('claude', () => {}, undefined, () => shownTerminals.push('claude'));
-		const restoreQuickPick = stubShowQuickPick(item => item.description === 'claude');
+		const restoreQuickPick = stubShowQuickPick(item => {
+			quickPickItems.push(item);
+			return item.description === 'claude';
+		});
 		const manager = new TerminalTargetManager(
 			createContextStub(subscriptions),
 			new Logger(),
@@ -247,6 +251,13 @@ suite('At Mention Bridge', () => {
 			await manager.selectTarget();
 
 			assert.deepStrictEqual(shownTerminals, ['claude']);
+			assert.deepStrictEqual(
+				quickPickItems.map(item => ({ label: item.label, description: item.description, detail: item.detail })),
+				[
+					{ label: '$(terminal) OpenAI Codex CLI', description: 'codex', detail: 'Active terminal' },
+					{ label: '$(terminal) Claude Code', description: 'claude', detail: 'Current target' },
+				],
+			);
 		} finally {
 			restoreQuickPick();
 			manager.dispose();
@@ -254,6 +265,46 @@ suite('At Mention Bridge', () => {
 				subscription.dispose();
 			}
 			startEmitter.dispose();
+		}
+	});
+
+	test('shows distinguishable active target status bar text and tooltip', async () => {
+		const subscriptions: vscode.Disposable[] = [];
+		const statusBarItem = createStatusBarItemStub();
+		const terminal = createTerminalStub('claude', () => {}, 123);
+		const claude = detectAgentFromCommand('claude')!;
+		const scanner = new FakeProcessScanner([{
+			agent: claude,
+			pid: 456,
+			commandLine: 'claude',
+		}]);
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			createTerminalApiStub({
+				terminals: [terminal],
+				activeTerminal: terminal,
+				createStatusBarItem: () => statusBarItem,
+			}),
+			scanner,
+		);
+
+		await flushPromises();
+
+		assert.strictEqual(statusBarItem.text, '$(mention) Claude Code · PID 456');
+		assert.strictEqual(
+			statusBarItem.tooltip,
+			[
+				'At Mention Bridge target: Claude Code',
+				'Terminal: claude',
+				'PID: 456',
+				'Click to select another target.',
+			].join('\n'),
+		);
+
+		manager.dispose();
+		for (const subscription of subscriptions) {
+			subscription.dispose();
 		}
 	});
 
@@ -437,11 +488,11 @@ function createContextStub(subscriptions: vscode.Disposable[]): vscode.Extension
 	} as unknown as vscode.ExtensionContext;
 }
 
-function createStatusBarItemStub(): vscode.StatusBarItem {
+function createStatusBarItemStub(): vscode.StatusBarItem & { text?: string; tooltip?: string | vscode.MarkdownString } {
 	return {
 		show: () => {},
 		dispose: () => {},
-	} as vscode.StatusBarItem;
+	} as vscode.StatusBarItem & { text?: string; tooltip?: string | vscode.MarkdownString };
 }
 
 function flushPromises(): Promise<void> {
