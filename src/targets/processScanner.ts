@@ -31,11 +31,17 @@ export interface TmuxPaneTarget {
 	readonly tmuxIsActivePane?: boolean;
 }
 
-interface ProcessRow {
+export interface ProcessRow {
 	readonly pid: number;
 	readonly ppid: number;
 	readonly command: string;
 	readonly commandLine: string;
+}
+
+export interface ProcessScannerHost {
+	listProcesses(): Promise<ProcessRow[]>;
+	listTmuxClients(): Promise<string>;
+	listTmuxPanes(): Promise<string>;
 }
 
 interface TmuxClient {
@@ -44,6 +50,7 @@ interface TmuxClient {
 	readonly pid?: number;
 	readonly sessionName: string;
 	readonly paneId: string;
+	readonly isControlMode: boolean;
 }
 
 interface TmuxPane {
@@ -59,12 +66,19 @@ interface TmuxPane {
 }
 
 export class ProcessScanner {
+	constructor(private readonly host: ProcessScannerHost = defaultProcessScannerHost) {}
+
 	async findAgentProcesses(rootPid: number): Promise<ProcessAgentMatch[]> {
-		const rows = await listProcesses();
+		const rows = await this.host.listProcesses();
+		const root = rows.find(row => row.pid === rootPid);
 		const descendants = collectDescendants(rootPid, rows);
+		const searchRows = [
+			...(root ? [root] : []),
+			...descendants,
+		];
 		const matches = new Map<string, ProcessAgentMatch>();
 
-		for (const row of descendants) {
+		for (const row of searchRows) {
 			const agent = detectAgentFromCommand(`${row.command} ${row.commandLine}`);
 			if (agent) {
 				matches.set(`${agent.id}:${row.pid}`, {
@@ -75,8 +89,8 @@ export class ProcessScanner {
 			}
 		}
 
-		if (descendants.some(row => /\btmux(?:\.exe)?\b/i.test(`${row.command} ${row.commandLine}`))) {
-			for (const match of await listTmuxAgentPanes(rootPid, rows, descendants)) {
+		if (searchRows.some(row => /\btmux(?:\.exe)?\b/i.test(`${row.command} ${row.commandLine}`))) {
+			for (const match of await listTmuxAgentPanes(this.host, rootPid, rows, descendants)) {
 				matches.set(`${match.agent.id}:tmux:${match.tmuxPaneId}`, match);
 			}
 		}
@@ -85,16 +99,29 @@ export class ProcessScanner {
 	}
 
 	async processExists(pid: number): Promise<boolean> {
-		const rows = await listProcesses();
+		const rows = await this.host.listProcesses();
 		return rows.some(row => row.pid === pid);
 	}
 
 	async findExistingPids(pids: readonly number[]): Promise<Set<number>> {
 		const wanted = new Set(pids);
-		const rows = await listProcesses();
+		const rows = await this.host.listProcesses();
 		return new Set(rows.filter(row => wanted.has(row.pid)).map(row => row.pid));
 	}
 }
+
+const defaultProcessScannerHost: ProcessScannerHost = {
+	listProcesses,
+	async listTmuxClients() {
+		const { stdout } = await execFileAsync('tmux', ['list-clients', '-F', '#{client_name}\t#{client_tty}\t#{client_pid}\t#{client_session}\t#{pane_id}\t#{client_control_mode}']);
+		return stdout;
+	},
+	async listTmuxPanes() {
+		const format = '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_title}';
+		const { stdout } = await execFileAsync('tmux', ['list-panes', '-a', '-F', format]);
+		return stdout;
+	},
+};
 
 export async function revealTmuxPane(target: TmuxPaneTarget): Promise<void> {
 	const args = target.tmuxClient
@@ -138,11 +165,11 @@ async function listWindowsProcesses(): Promise<ProcessRow[]> {
 	});
 }
 
-async function listTmuxAgentPanes(rootPid: number, rows: readonly ProcessRow[], descendants: readonly ProcessRow[]): Promise<ProcessAgentMatch[]> {
+async function listTmuxAgentPanes(host: ProcessScannerHost, rootPid: number, rows: readonly ProcessRow[], descendants: readonly ProcessRow[]): Promise<ProcessAgentMatch[]> {
 	try {
-		const clients = await listTmuxClients(rootPid, descendants);
+		const clients = await listTmuxClients(host, rootPid, descendants);
 		const sessions = new Set(clients.map(client => client.sessionName).filter(Boolean));
-		const panes = await listTmuxPanes();
+		const panes = await listTmuxPanes(host);
 		return panes.flatMap(pane => {
 			if (sessions.size > 0 && !sessions.has(pane.sessionName)) {
 				return [];
@@ -174,11 +201,11 @@ async function listTmuxAgentPanes(rootPid: number, rows: readonly ProcessRow[], 
 	}
 }
 
-async function listTmuxClients(rootPid: number, descendants: readonly ProcessRow[]): Promise<TmuxClient[]> {
+async function listTmuxClients(host: ProcessScannerHost, rootPid: number, descendants: readonly ProcessRow[]): Promise<TmuxClient[]> {
 	const descendantPids = new Set([rootPid, ...descendants.map(row => row.pid)]);
-	const { stdout } = await execFileAsync('tmux', ['list-clients', '-F', '#{client_name}\t#{client_tty}\t#{client_pid}\t#{client_session}\t#{pane_id}']);
+	const stdout = await host.listTmuxClients();
 	const clients = stdout.split(/\r?\n/).flatMap(line => {
-		const [name, tty, pid, sessionName, paneId] = line.split('\t');
+		const [name, tty, pid, sessionName, paneId, controlMode] = line.split('\t');
 		if (!sessionName) {
 			return [];
 		}
@@ -188,15 +215,19 @@ async function listTmuxClients(rootPid: number, descendants: readonly ProcessRow
 			pid: Number(pid) || undefined,
 			sessionName,
 			paneId: paneId ?? '',
+			isControlMode: controlMode === '1',
 		}];
 	});
 	const matchedClients = clients.filter(client => client.pid && descendantPids.has(client.pid));
-	return matchedClients.length > 0 ? matchedClients : clients;
+	if (matchedClients.length === 0) {
+		return clients;
+	}
+	const matchedSessions = new Set(matchedClients.map(client => client.sessionName));
+	return clients.filter(client => matchedSessions.has(client.sessionName));
 }
 
-async function listTmuxPanes(): Promise<TmuxPane[]> {
-	const format = '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_title}';
-	const { stdout } = await execFileAsync('tmux', ['list-panes', '-a', '-F', format]);
+async function listTmuxPanes(host: ProcessScannerHost): Promise<TmuxPane[]> {
+	const stdout = await host.listTmuxPanes();
 	return stdout.split(/\r?\n/).flatMap(line => {
 		const [sessionName, windowId, windowIndex, windowName, paneId, paneIndex, panePid, currentCommand, title] = line.split('\t');
 		if (!sessionName || !paneId) {
@@ -237,12 +268,16 @@ function findAgentInPane(panePid: number, rows: readonly ProcessRow[]): ProcessA
 }
 
 function clientForPane(pane: TmuxPane, clients: readonly TmuxClient[]): TmuxClient | undefined {
-	return clients.find(client => client.sessionName === pane.sessionName && client.paneId === pane.paneId)
-		?? clients.find(client => client.sessionName === pane.sessionName);
+	return preferredTmuxClient(clients.filter(client => client.sessionName === pane.sessionName && client.paneId === pane.paneId))
+		?? preferredTmuxClient(clients.filter(client => client.sessionName === pane.sessionName));
 }
 
 function targetForTmuxClient(client: TmuxClient): string | undefined {
 	return client.name || client.tty || undefined;
+}
+
+function preferredTmuxClient(clients: readonly TmuxClient[]): TmuxClient | undefined {
+	return [...clients].sort((first, second) => Number(first.isControlMode) - Number(second.isControlMode))[0];
 }
 
 function collectDescendants(rootPid: number, rows: readonly ProcessRow[]): ProcessRow[] {

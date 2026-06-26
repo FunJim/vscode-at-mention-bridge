@@ -8,7 +8,7 @@ import { buildReferenceContext, selectionToLocation } from '../core/references';
 import { renderTemplate } from '../core/templates';
 import { truncateMiddle } from '../core/text';
 import { Logger } from '../core/logger';
-import { ProcessAgentMatch } from '../targets/processScanner';
+import { ProcessAgentMatch, ProcessScanner, ProcessScannerHost, ProcessRow } from '../targets/processScanner';
 import { TerminalTargetManager, TerminalWindowApi } from '../targets/terminalTargets';
 
 suite('At Mention Bridge', () => {
@@ -221,6 +221,46 @@ suite('At Mention Bridge', () => {
 			subscription.dispose();
 		}
 		startEmitter.dispose();
+	});
+
+	test('discovers tmux panes when the terminal process is the tmux client', async () => {
+		const scanner = new ProcessScanner(new FakeProcessScannerHost({
+			processes: [
+				{
+					pid: 2643880,
+					ppid: 2032722,
+					command: 'tmux: client',
+					commandLine: '/usr/bin/tmux new-session -A -s workspace',
+				},
+				{
+					pid: 1774212,
+					ppid: 3397074,
+					command: 'bash',
+					commandLine: '-bash',
+				},
+				{
+					pid: 2671044,
+					ppid: 1774212,
+					command: 'node-MainThread',
+					commandLine: 'node /usr/local/bin/company-agent-wrapper',
+				},
+				{
+					pid: 2671085,
+					ppid: 2671044,
+					command: 'claude.exe',
+					commandLine: '/usr/local/lib/company-agent-wrapper/node_modules/@anthropic-ai/claude-code/bin/claude.exe --settings {}',
+				},
+			],
+			tmuxClients: '/dev/pts/3\t/dev/pts/3\t2140053\tworkspace\t%53\t1\n/dev/pts/0\t/dev/pts/0\t2643880\tworkspace\t%53\t0\n',
+			tmuxPanes: 'workspace\t@52\t1\t[tmux]\t%53\t1\t1774212\tnode\t_ Check running process PID\n',
+		}));
+
+		const matches = await scanner.findAgentProcesses(2643880);
+
+		assert.deepStrictEqual(
+			matches.map(match => ({ agent: match.agent.id, pid: match.pid, pane: match.tmuxPaneId, client: match.tmuxClient })),
+			[{ agent: 'claude', pid: 2671085, pane: '%53', client: '/dev/pts/0' }],
+		);
 	});
 
 	test('reveals the selected target terminal', async () => {
@@ -651,6 +691,26 @@ class FakeProcessScanner {
 	async findExistingPids(pids: readonly number[]): Promise<Set<number>> {
 		const wanted = new Set(pids);
 		return new Set(this.matches.flatMap(match => match.pid && wanted.has(match.pid) ? [match.pid] : []));
+	}
+}
+
+class FakeProcessScannerHost implements ProcessScannerHost {
+	constructor(private readonly options: {
+		readonly processes: ProcessRow[];
+		readonly tmuxClients?: string;
+		readonly tmuxPanes?: string;
+	}) {}
+
+	async listProcesses(): Promise<ProcessRow[]> {
+		return this.options.processes;
+	}
+
+	async listTmuxClients(): Promise<string> {
+		return this.options.tmuxClients ?? '';
+	}
+
+	async listTmuxPanes(): Promise<string> {
+		return this.options.tmuxPanes ?? '';
 	}
 }
 
