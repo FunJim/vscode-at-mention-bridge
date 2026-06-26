@@ -9,6 +9,26 @@ export interface ProcessAgentMatch {
 	readonly pid?: number;
 	readonly commandLine: string;
 	readonly tmuxPaneId?: string;
+	readonly tmuxPanePid?: number;
+	readonly tmuxClient?: string;
+	readonly tmuxSessionName?: string;
+	readonly tmuxWindowId?: string;
+	readonly tmuxWindowIndex?: string;
+	readonly tmuxWindowName?: string;
+	readonly tmuxPaneIndex?: string;
+	readonly tmuxIsActivePane?: boolean;
+}
+
+export interface TmuxPaneTarget {
+	readonly tmuxPaneId: string;
+	readonly tmuxPanePid?: number;
+	readonly tmuxClient?: string;
+	readonly tmuxSessionName?: string;
+	readonly tmuxWindowId?: string;
+	readonly tmuxWindowIndex?: string;
+	readonly tmuxWindowName?: string;
+	readonly tmuxPaneIndex?: string;
+	readonly tmuxIsActivePane?: boolean;
 }
 
 interface ProcessRow {
@@ -16,6 +36,26 @@ interface ProcessRow {
 	readonly ppid: number;
 	readonly command: string;
 	readonly commandLine: string;
+}
+
+interface TmuxClient {
+	readonly name: string;
+	readonly tty: string;
+	readonly pid?: number;
+	readonly sessionName: string;
+	readonly paneId: string;
+}
+
+interface TmuxPane {
+	readonly sessionName: string;
+	readonly windowId: string;
+	readonly windowIndex: string;
+	readonly windowName: string;
+	readonly paneId: string;
+	readonly paneIndex: string;
+	readonly panePid?: number;
+	readonly currentCommand: string;
+	readonly title: string;
 }
 
 export class ProcessScanner {
@@ -36,7 +76,7 @@ export class ProcessScanner {
 		}
 
 		if (descendants.some(row => /\btmux(?:\.exe)?\b/i.test(`${row.command} ${row.commandLine}`))) {
-			for (const match of await listTmuxAgentPanes()) {
+			for (const match of await listTmuxAgentPanes(rootPid, rows, descendants)) {
 				matches.set(`${match.agent.id}:tmux:${match.tmuxPaneId}`, match);
 			}
 		}
@@ -56,9 +96,16 @@ export class ProcessScanner {
 	}
 }
 
-export async function sendTextToTmuxPane(paneId: string, text: string): Promise<void> {
-	await execFileAsync('tmux', ['select-pane', '-t', paneId]);
-	await execFileAsync('tmux', ['send-keys', '-t', paneId, '-l', text]);
+export async function revealTmuxPane(target: TmuxPaneTarget): Promise<void> {
+	const args = target.tmuxClient
+		? ['switch-client', '-c', target.tmuxClient, '-t', target.tmuxPaneId]
+		: ['switch-client', '-t', target.tmuxPaneId];
+	await execFileAsync('tmux', args);
+	await execFileAsync('tmux', ['select-pane', '-t', target.tmuxPaneId]);
+}
+
+export async function sendTextToTmuxPane(target: TmuxPaneTarget, text: string): Promise<void> {
+	await execFileAsync('tmux', ['send-keys', '-t', target.tmuxPaneId, '-l', text]);
 }
 
 async function listProcesses(): Promise<ProcessRow[]> {
@@ -91,29 +138,111 @@ async function listWindowsProcesses(): Promise<ProcessRow[]> {
 	});
 }
 
-async function listTmuxAgentPanes(): Promise<ProcessAgentMatch[]> {
+async function listTmuxAgentPanes(rootPid: number, rows: readonly ProcessRow[], descendants: readonly ProcessRow[]): Promise<ProcessAgentMatch[]> {
 	try {
-		const { stdout } = await execFileAsync('tmux', ['list-panes', '-a', '-F', '#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_title}']);
-		return stdout.split(/\r?\n/).flatMap(line => {
-			const [paneId, panePid, paneCommand, paneTitle] = line.split('\t');
-			if (!paneId || !paneCommand) {
+		const clients = await listTmuxClients(rootPid, descendants);
+		const sessions = new Set(clients.map(client => client.sessionName).filter(Boolean));
+		const panes = await listTmuxPanes();
+		return panes.flatMap(pane => {
+			if (sessions.size > 0 && !sessions.has(pane.sessionName)) {
 				return [];
 			}
-			const commandLine = `${paneCommand} ${paneTitle ?? ''}`.trim();
-			const agent = detectAgentFromCommand(commandLine);
+			const processMatch = pane.panePid ? findAgentInPane(pane.panePid, rows) : undefined;
+			const commandLine = processMatch?.commandLine ?? `${pane.currentCommand} ${pane.title}`.trim();
+			const agent = processMatch?.agent ?? detectAgentFromCommand(commandLine);
 			if (!agent) {
 				return [];
 			}
+			const client = clientForPane(pane, clients);
 			return [{
 				agent,
-				pid: Number(panePid) || undefined,
+				pid: processMatch?.pid ?? pane.panePid,
 				commandLine,
-				tmuxPaneId: paneId,
+				tmuxPaneId: pane.paneId,
+				tmuxPanePid: pane.panePid,
+				tmuxClient: client ? targetForTmuxClient(client) : undefined,
+				tmuxSessionName: pane.sessionName,
+				tmuxWindowId: pane.windowId,
+				tmuxWindowIndex: pane.windowIndex,
+				tmuxWindowName: pane.windowName,
+				tmuxPaneIndex: pane.paneIndex,
+				tmuxIsActivePane: client?.paneId === pane.paneId,
 			}];
 		});
 	} catch {
 		return [];
 	}
+}
+
+async function listTmuxClients(rootPid: number, descendants: readonly ProcessRow[]): Promise<TmuxClient[]> {
+	const descendantPids = new Set([rootPid, ...descendants.map(row => row.pid)]);
+	const { stdout } = await execFileAsync('tmux', ['list-clients', '-F', '#{client_name}\t#{client_tty}\t#{client_pid}\t#{client_session}\t#{pane_id}']);
+	const clients = stdout.split(/\r?\n/).flatMap(line => {
+		const [name, tty, pid, sessionName, paneId] = line.split('\t');
+		if (!sessionName) {
+			return [];
+		}
+		return [{
+			name: name ?? '',
+			tty: tty ?? '',
+			pid: Number(pid) || undefined,
+			sessionName,
+			paneId: paneId ?? '',
+		}];
+	});
+	const matchedClients = clients.filter(client => client.pid && descendantPids.has(client.pid));
+	return matchedClients.length > 0 ? matchedClients : clients;
+}
+
+async function listTmuxPanes(): Promise<TmuxPane[]> {
+	const format = '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_title}';
+	const { stdout } = await execFileAsync('tmux', ['list-panes', '-a', '-F', format]);
+	return stdout.split(/\r?\n/).flatMap(line => {
+		const [sessionName, windowId, windowIndex, windowName, paneId, paneIndex, panePid, currentCommand, title] = line.split('\t');
+		if (!sessionName || !paneId) {
+			return [];
+		}
+		return [{
+			sessionName,
+			windowId: windowId ?? '',
+			windowIndex: windowIndex ?? '',
+			windowName: windowName ?? '',
+			paneId,
+			paneIndex: paneIndex ?? '',
+			panePid: Number(panePid) || undefined,
+			currentCommand: currentCommand ?? '',
+			title: title ?? '',
+		}];
+	});
+}
+
+function findAgentInPane(panePid: number, rows: readonly ProcessRow[]): ProcessAgentMatch | undefined {
+	const paneRoot = rows.find(row => row.pid === panePid);
+	const paneRows = [
+		...(paneRoot ? [paneRoot] : []),
+		...collectDescendants(panePid, rows),
+	];
+	for (const row of paneRows) {
+		const commandLine = `${row.command} ${row.commandLine}`.trim();
+		const agent = detectAgentFromCommand(commandLine);
+		if (agent) {
+			return {
+				agent,
+				pid: row.pid,
+				commandLine: row.commandLine || row.command,
+			};
+		}
+	}
+	return undefined;
+}
+
+function clientForPane(pane: TmuxPane, clients: readonly TmuxClient[]): TmuxClient | undefined {
+	return clients.find(client => client.sessionName === pane.sessionName && client.paneId === pane.paneId)
+		?? clients.find(client => client.sessionName === pane.sessionName);
+}
+
+function targetForTmuxClient(client: TmuxClient): string | undefined {
+	return client.name || client.tty || undefined;
 }
 
 function collectDescendants(rootPid: number, rows: readonly ProcessRow[]): ProcessRow[] {

@@ -235,7 +235,7 @@ suite('At Mention Bridge', () => {
 			onShow: quickPick => {
 				quickPickItems.push(...quickPick.items);
 				quickPickActiveItems.push([...quickPick.activeItems]);
-				quickPick.selectedItems = quickPick.items.filter(item => item.description === 'codex');
+				quickPick.selectedItems = quickPick.items.filter(item => item.description === 'PID 200');
 				quickPick.accept();
 			},
 		});
@@ -265,13 +265,13 @@ suite('At Mention Bridge', () => {
 			assert.deepStrictEqual(
 				quickPickItems.map(item => ({ label: item.label, description: item.description, detail: item.detail })),
 				[
-					{ label: '$(terminal) Claude Code', description: 'claude', detail: 'Current target · PID 100' },
-					{ label: '$(terminal) OpenAI Codex CLI', description: 'codex', detail: 'Active terminal · PID 200' },
+					{ label: '$(terminal) Claude Code', description: 'PID 100', detail: 'Current target · Terminal: claude' },
+					{ label: '$(terminal) OpenAI Codex CLI', description: 'PID 200', detail: 'Active terminal · Terminal: codex' },
 				],
 			);
 			assert.deepStrictEqual(
 				quickPickActiveItems.map(items => items.map(item => ({ label: item.label, description: item.description }))),
-				[[{ label: '$(terminal) Claude Code', description: 'claude' }]],
+				[[{ label: '$(terminal) Claude Code', description: 'PID 100' }]],
 			);
 		} finally {
 			restoreQuickPick();
@@ -351,6 +351,83 @@ suite('At Mention Bridge', () => {
 			subscription.dispose();
 		}
 		startEmitter.dispose();
+	});
+
+	test('keeps tmux panes as separate selectable targets and only auto-activates the active pane', async () => {
+		const subscriptions: vscode.Disposable[] = [];
+		const terminal = createTerminalStub('tmux', () => {}, 123);
+		const codex = detectAgentFromCommand('codex')!;
+		const claude = detectAgentFromCommand('claude')!;
+		const scanner = new FakeProcessScanner([
+			{
+				agent: codex,
+				pid: 38625,
+				commandLine: 'codex',
+				tmuxPaneId: '%2',
+				tmuxPanePid: 37311,
+				tmuxSessionName: 'test-0',
+				tmuxWindowIndex: '1',
+				tmuxWindowName: 'claude',
+				tmuxPaneIndex: '1',
+				tmuxIsActivePane: false,
+			},
+			{
+				agent: claude,
+				pid: 49446,
+				commandLine: 'claude',
+				tmuxPaneId: '%4',
+				tmuxPanePid: 48869,
+				tmuxSessionName: 'test-0',
+				tmuxWindowIndex: '1',
+				tmuxWindowName: 'claude',
+				tmuxPaneIndex: '2',
+				tmuxIsActivePane: true,
+			},
+			{
+				agent: claude,
+				pid: 46465,
+				commandLine: 'claude.exe',
+				tmuxPaneId: '%3',
+				tmuxPanePid: 45737,
+				tmuxSessionName: 'test-0',
+				tmuxWindowIndex: '2',
+				tmuxWindowName: 'node',
+				tmuxPaneIndex: '1',
+				tmuxIsActivePane: false,
+			},
+		]);
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			new Logger(),
+			createTerminalApiStub({
+				terminals: [terminal],
+				activeTerminal: terminal,
+			}),
+			scanner,
+		);
+
+		await flushPromises();
+
+		assert.deepStrictEqual(
+			manager.getSelectableTargetsForTesting().map(target => ({
+				agent: target.agent.id,
+				pid: target.pid,
+				pane: target.tmuxPaneId,
+				window: target.tmuxWindowIndex,
+				isActivePane: target.tmuxIsActivePane,
+			})),
+			[
+				{ agent: 'codex', pid: 38625, pane: '%2', window: '1', isActivePane: false },
+				{ agent: 'claude', pid: 49446, pane: '%4', window: '1', isActivePane: true },
+				{ agent: 'claude', pid: 46465, pane: '%3', window: '2', isActivePane: false },
+			],
+		);
+		assert.strictEqual((manager as unknown as { activeTarget?: { tmuxPaneId?: string } }).activeTarget?.tmuxPaneId, '%4');
+
+		manager.dispose();
+		for (const subscription of subscriptions) {
+			subscription.dispose();
+		}
 	});
 
 	test('next target warns when no targets have been discovered', async () => {

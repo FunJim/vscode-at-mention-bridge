@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AgentDefinition, detectAgentFromCommand } from '../core/agents';
 import { getConfiguration } from '../core/configuration';
 import { Logger } from '../core/logger';
-import { ProcessAgentMatch, ProcessScanner, sendTextToTmuxPane } from './processScanner';
+import { ProcessAgentMatch, ProcessScanner, revealTmuxPane, sendTextToTmuxPane, TmuxPaneTarget } from './processScanner';
 
 export interface TargetRecord {
 	readonly key: string;
@@ -10,6 +10,14 @@ export interface TargetRecord {
 	readonly agent: AgentDefinition;
 	readonly pid?: number;
 	readonly tmuxPaneId?: string;
+	readonly tmuxPanePid?: number;
+	readonly tmuxClient?: string;
+	readonly tmuxSessionName?: string;
+	readonly tmuxWindowId?: string;
+	readonly tmuxWindowIndex?: string;
+	readonly tmuxWindowName?: string;
+	readonly tmuxPaneIndex?: string;
+	readonly tmuxIsActivePane?: boolean;
 	readonly source: 'shellExecution' | 'process';
 }
 
@@ -153,9 +161,9 @@ export class TerminalTargetManager implements vscode.Disposable {
 		}
 
 		const textToInsert = `${text} `;
-		target.terminal.show(false);
+		await this.revealTarget(target);
 		if (target.tmuxPaneId) {
-			await sendTextToTmuxPane(target.tmuxPaneId, textToInsert);
+			await sendTextToTmuxPane(this.tmuxPaneTarget(target), textToInsert);
 		} else {
 			target.terminal.sendText(textToInsert, false);
 		}
@@ -182,7 +190,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 			return;
 		}
 
-		const target = this.selectableTargets().find(candidate => candidate.terminal === terminal);
+		const target = this.preferredTargetForActiveTerminal(terminal);
 		if (target) {
 			this.activeKey = target.key;
 			this.persistActiveKey();
@@ -233,8 +241,8 @@ export class TerminalTargetManager implements vscode.Disposable {
 			}
 			const matches = await this.scanner.findAgentProcesses(processId);
 			for (const match of matches) {
-				this.addTarget(terminal, match.agent, 'process', match.pid, match.tmuxPaneId);
-				if (!this.activeKey || this.shouldAutoActivateTerminal(terminal)) {
+				this.addTarget(terminal, match.agent, 'process', match.pid, match);
+				if (!this.activeKey || this.shouldAutoActivateMatch(terminal, match)) {
 					this.activeKey = this.keyFor(terminal, match.agent.id, match.tmuxPaneId, match.pid);
 					void this.persistActiveKey();
 				}
@@ -247,10 +255,31 @@ export class TerminalTargetManager implements vscode.Disposable {
 		}
 	}
 
-	private addTarget(terminal: vscode.Terminal, agent: AgentDefinition, source: TargetRecord['source'], pid?: number, tmuxPaneId?: string): void {
-		const key = this.keyFor(terminal, agent.id, tmuxPaneId, pid);
+	private addTarget(
+		terminal: vscode.Terminal,
+		agent: AgentDefinition,
+		source: TargetRecord['source'],
+		pid?: number,
+		match?: Pick<ProcessAgentMatch, 'tmuxPaneId' | 'tmuxPanePid' | 'tmuxClient' | 'tmuxSessionName' | 'tmuxWindowId' | 'tmuxWindowIndex' | 'tmuxWindowName' | 'tmuxPaneIndex' | 'tmuxIsActivePane'>,
+	): void {
+		const key = this.keyFor(terminal, agent.id, match?.tmuxPaneId, pid);
 		const currentActiveTarget = this.activeKey ? this.targets.get(this.activeKey) : undefined;
-		const target = { key, terminal, agent, pid, tmuxPaneId, source };
+		const target = {
+			key,
+			terminal,
+			agent,
+			pid,
+			tmuxPaneId: match?.tmuxPaneId,
+			tmuxPanePid: match?.tmuxPanePid,
+			tmuxClient: match?.tmuxClient,
+			tmuxSessionName: match?.tmuxSessionName,
+			tmuxWindowId: match?.tmuxWindowId,
+			tmuxWindowIndex: match?.tmuxWindowIndex,
+			tmuxWindowName: match?.tmuxWindowName,
+			tmuxPaneIndex: match?.tmuxPaneIndex,
+			tmuxIsActivePane: match?.tmuxIsActivePane,
+			source,
+		};
 		this.targets.set(key, target);
 		if (!this.activeKey && key === this.persistedActiveKey) {
 			this.activeKey = key;
@@ -281,7 +310,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 		this.activeKey = target.key;
 		await this.persistActiveKey();
 		this.updateStatusBar();
-		target.terminal.show(false);
+		await this.revealTarget(target);
 	}
 
 	private async pruneInactiveProcessTargets(): Promise<void> {
@@ -331,6 +360,21 @@ export class TerminalTargetManager implements vscode.Disposable {
 		return getConfiguration().autoLinkActiveAgentTerminal && this.terminalApi.activeTerminal === terminal;
 	}
 
+	private shouldAutoActivateMatch(terminal: vscode.Terminal, match: ProcessAgentMatch): boolean {
+		if (!this.shouldAutoActivateTerminal(terminal)) {
+			return false;
+		}
+		if (match.tmuxPaneId) {
+			return match.tmuxIsActivePane === true;
+		}
+		return true;
+	}
+
+	private preferredTargetForActiveTerminal(terminal: vscode.Terminal): TargetRecord | undefined {
+		const targets = this.selectableTargets().filter(candidate => candidate.terminal === terminal);
+		return targets.find(target => target.tmuxIsActivePane) ?? targets[0];
+	}
+
 	private removeTerminal(terminal: vscode.Terminal): void {
 		for (const [key, target] of this.targets) {
 			if (target.terminal === terminal) {
@@ -353,7 +397,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 				targets.set(key, target);
 			}
 		}
-		return [...targets.values()].sort((first, second) => this.compareTargetsByPid(first, second));
+		return [...targets.values()].sort((first, second) => this.compareTargets(first, second));
 	}
 
 	private showTargetQuickPick(items: readonly TargetQuickPickItem[], activeTarget: TargetRecord | undefined): Promise<TargetQuickPickItem | undefined> {
@@ -391,11 +435,34 @@ export class TerminalTargetManager implements vscode.Disposable {
 		});
 	}
 
-	private compareTargetsByPid(first: TargetRecord, second: TargetRecord): number {
+	private compareTargets(first: TargetRecord, second: TargetRecord): number {
+		if (first.tmuxPaneId && second.tmuxPaneId) {
+			return this.compareTmuxTargets(first, second);
+		}
+
 		const firstPid = first.pid ?? Number.POSITIVE_INFINITY;
 		const secondPid = second.pid ?? Number.POSITIVE_INFINITY;
 		if (firstPid !== secondPid) {
 			return firstPid - secondPid;
+		}
+
+		return this.targetSortLabel(first).localeCompare(this.targetSortLabel(second));
+	}
+
+	private compareTmuxTargets(first: TargetRecord, second: TargetRecord): number {
+		const sessionDelta = (first.tmuxSessionName ?? '').localeCompare(second.tmuxSessionName ?? '');
+		if (sessionDelta !== 0) {
+			return sessionDelta;
+		}
+
+		const windowDelta = compareTmuxIndex(first.tmuxWindowIndex, second.tmuxWindowIndex);
+		if (windowDelta !== 0) {
+			return windowDelta;
+		}
+
+		const paneDelta = compareTmuxIndex(first.tmuxPaneIndex, second.tmuxPaneIndex);
+		if (paneDelta !== 0) {
+			return paneDelta;
 		}
 
 		return this.targetSortLabel(first).localeCompare(this.targetSortLabel(second));
@@ -411,11 +478,13 @@ export class TerminalTargetManager implements vscode.Disposable {
 	}
 
 	private selectableKeyFor(target: TargetRecord): string {
-		return `${this.idForTerminal(target.terminal)}:${target.agent.id}`;
+		return `${this.idForTerminal(target.terminal)}:${target.agent.id}:${target.tmuxPaneId ?? 'terminal'}`;
 	}
 
 	private sameSelectableTarget(first: TargetRecord, second: TargetRecord): boolean {
-		return first.terminal === second.terminal && first.agent.id === second.agent.id;
+		return first.terminal === second.terminal
+			&& first.agent.id === second.agent.id
+			&& first.tmuxPaneId === second.tmuxPaneId;
 	}
 
 	private isPreferredTarget(candidate: TargetRecord, current: TargetRecord): boolean {
@@ -484,15 +553,19 @@ export class TerminalTargetManager implements vscode.Disposable {
 	}
 
 	private targetDescription(target: TargetRecord): string {
-		return target.terminal.name;
+		return [
+			this.tmuxLocationLabel(target),
+			`PID ${target.pid ?? 'unknown'}`,
+		].filter(Boolean).join(' · ');
 	}
 
 	private targetDetail(target: TargetRecord, isCurrent: boolean): string {
 		return [
 			isCurrent ? 'Current target' : undefined,
 			this.terminalApi.activeTerminal === target.terminal ? 'Active terminal' : undefined,
-			target.tmuxPaneId ? `tmux ${target.tmuxPaneId}` : undefined,
-			target.pid ? `PID ${target.pid}` : undefined,
+			`Terminal: ${target.terminal.name}`,
+			target.tmuxWindowName ? `Window: ${target.tmuxWindowName}` : undefined,
+			target.tmuxPaneId ? `Pane: ${target.tmuxPaneId}` : undefined,
 		].filter(Boolean).join(' · ');
 	}
 
@@ -500,9 +573,55 @@ export class TerminalTargetManager implements vscode.Disposable {
 		return [
 			`At Mention Bridge target: ${target.agent.label}`,
 			`Terminal: ${target.terminal.name}`,
-			target.tmuxPaneId ? `tmux pane: ${target.tmuxPaneId}` : undefined,
+			this.tmuxLocationLabel(target) ? `tmux: ${this.tmuxLocationLabel(target)}` : undefined,
+			target.tmuxPaneId ? `Pane: ${target.tmuxPaneId}` : undefined,
 			target.pid ? `PID: ${target.pid}` : undefined,
 			'Click to select another target.',
 		].filter(Boolean).join('\n');
 	}
+
+	private async revealTarget(target: TargetRecord): Promise<void> {
+		target.terminal.show(false);
+		if (!target.tmuxPaneId) {
+			return;
+		}
+		try {
+			await revealTmuxPane(this.tmuxPaneTarget(target));
+		} catch (error) {
+			this.logger.warn('Unable to reveal tmux pane', error);
+		}
+	}
+
+	private tmuxPaneTarget(target: TargetRecord): TmuxPaneTarget {
+		return {
+			tmuxPaneId: target.tmuxPaneId!,
+			tmuxPanePid: target.tmuxPanePid,
+			tmuxClient: target.tmuxClient,
+			tmuxSessionName: target.tmuxSessionName,
+			tmuxWindowId: target.tmuxWindowId,
+			tmuxWindowIndex: target.tmuxWindowIndex,
+			tmuxWindowName: target.tmuxWindowName,
+			tmuxPaneIndex: target.tmuxPaneIndex,
+			tmuxIsActivePane: target.tmuxIsActivePane,
+		};
+	}
+
+	private tmuxLocationLabel(target: TargetRecord): string | undefined {
+		if (!target.tmuxPaneId) {
+			return undefined;
+		}
+		const session = target.tmuxSessionName ? `${target.tmuxSessionName}:` : '';
+		const window = target.tmuxWindowIndex ?? target.tmuxWindowId;
+		const pane = target.tmuxPaneIndex ?? target.tmuxPaneId;
+		return `${session}${window ?? '?'}${pane ? `.${pane}` : ''}`;
+	}
+}
+
+function compareTmuxIndex(first: string | undefined, second: string | undefined): number {
+	const firstNumber = first === undefined ? Number.POSITIVE_INFINITY : Number(first);
+	const secondNumber = second === undefined ? Number.POSITIVE_INFINITY : Number(second);
+	if (Number.isFinite(firstNumber) && Number.isFinite(secondNumber) && firstNumber !== secondNumber) {
+		return firstNumber - secondNumber;
+	}
+	return (first ?? '').localeCompare(second ?? '');
 }
