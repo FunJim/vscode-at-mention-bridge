@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { AgentDefinition, detectAgentFromCommand } from '../core/agents';
+import { LogSink } from '../core/logger';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,6 +45,17 @@ export interface ProcessScannerHost {
 	listTmuxPanes(): Promise<string>;
 }
 
+export interface ProcessScanSummary {
+	readonly rootPid: number;
+	readonly processCount: number;
+	readonly descendantCount: number;
+	readonly scannedProcessCount: number;
+	readonly directMatchCount: number;
+	readonly tmuxDetected: boolean;
+	readonly tmuxMatchCount: number;
+	readonly totalMatchCount: number;
+}
+
 interface TmuxClient {
 	readonly name: string;
 	readonly tty: string;
@@ -66,7 +78,10 @@ interface TmuxPane {
 }
 
 export class ProcessScanner {
-	constructor(private readonly host: ProcessScannerHost = defaultProcessScannerHost) {}
+	constructor(
+		private readonly host: ProcessScannerHost = defaultProcessScannerHost,
+		private readonly logger?: Pick<LogSink, 'debug' | 'warn'>,
+	) {}
 
 	async findAgentProcesses(rootPid: number): Promise<ProcessAgentMatch[]> {
 		const rows = await this.host.listProcesses();
@@ -77,10 +92,12 @@ export class ProcessScanner {
 			...descendants,
 		];
 		const matches = new Map<string, ProcessAgentMatch>();
+		let directMatchCount = 0;
 
 		for (const row of searchRows) {
 			const agent = detectAgentFromCommand(`${row.command} ${row.commandLine}`);
 			if (agent) {
+				directMatchCount++;
 				matches.set(`${agent.id}:${row.pid}`, {
 					agent,
 					pid: row.pid,
@@ -89,12 +106,26 @@ export class ProcessScanner {
 			}
 		}
 
-		if (searchRows.some(row => /\btmux(?:\.exe)?\b/i.test(`${row.command} ${row.commandLine}`))) {
-			for (const match of await listTmuxAgentPanes(this.host, rootPid, rows, descendants)) {
+		const tmuxDetected = searchRows.some(row => /\btmux(?:\.exe)?\b/i.test(`${row.command} ${row.commandLine}`));
+		let tmuxMatchCount = 0;
+		if (tmuxDetected) {
+			const tmuxMatches = await listTmuxAgentPanes(this.host, rootPid, rows, descendants, this.logger);
+			tmuxMatchCount = tmuxMatches.length;
+			for (const match of tmuxMatches) {
 				matches.set(`${match.agent.id}:tmux:${match.tmuxPaneId}`, match);
 			}
 		}
 
+		this.logger?.debug('Process scan completed', {
+			rootPid,
+			processCount: rows.length,
+			descendantCount: descendants.length,
+			scannedProcessCount: searchRows.length,
+			directMatchCount,
+			tmuxDetected,
+			tmuxMatchCount,
+			totalMatchCount: matches.size,
+		} satisfies ProcessScanSummary);
 		return [...matches.values()];
 	}
 
@@ -165,12 +196,18 @@ async function listWindowsProcesses(): Promise<ProcessRow[]> {
 	});
 }
 
-async function listTmuxAgentPanes(host: ProcessScannerHost, rootPid: number, rows: readonly ProcessRow[], descendants: readonly ProcessRow[]): Promise<ProcessAgentMatch[]> {
+async function listTmuxAgentPanes(
+	host: ProcessScannerHost,
+	rootPid: number,
+	rows: readonly ProcessRow[],
+	descendants: readonly ProcessRow[],
+	logger: Pick<LogSink, 'debug' | 'warn'> | undefined,
+): Promise<ProcessAgentMatch[]> {
 	try {
 		const clients = await listTmuxClients(host, rootPid, descendants);
 		const sessions = new Set(clients.map(client => client.sessionName).filter(Boolean));
 		const panes = await listTmuxPanes(host);
-		return panes.flatMap(pane => {
+		const matches = panes.flatMap(pane => {
 			if (sessions.size > 0 && !sessions.has(pane.sessionName)) {
 				return [];
 			}
@@ -196,7 +233,23 @@ async function listTmuxAgentPanes(host: ProcessScannerHost, rootPid: number, row
 				tmuxIsActivePane: client?.paneId === pane.paneId,
 			}];
 		});
-	} catch {
+		logger?.debug('tmux scan completed', {
+			rootPid,
+			clientCount: clients.length,
+			sessionCount: sessions.size,
+			paneCount: panes.length,
+			matchCount: matches.length,
+		});
+		return matches;
+	} catch (error) {
+		if (isExpectedTmuxProbeFailure(error)) {
+			logger?.debug('tmux scan skipped because tmux is not ready for this terminal', {
+				rootPid,
+				reason: errorMessage(error),
+			});
+		} else {
+			logger?.warn('Unable to scan tmux panes for agent processes', error);
+		}
 		return [];
 	}
 }
@@ -278,6 +331,16 @@ function targetForTmuxClient(client: TmuxClient): string | undefined {
 
 function preferredTmuxClient(clients: readonly TmuxClient[]): TmuxClient | undefined {
 	return [...clients].sort((first, second) => Number(first.isControlMode) - Number(second.isControlMode))[0];
+}
+
+function isExpectedTmuxProbeFailure(error: unknown): boolean {
+	const message = errorMessage(error);
+	return /\bno server running\b/i.test(message)
+		|| /\bno current target\b/i.test(message);
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function collectDescendants(rootPid: number, rows: readonly ProcessRow[]): ProcessRow[] {

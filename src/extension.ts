@@ -61,12 +61,18 @@ function registerCommand(command: string, callback: (...args: any[]) => unknown)
 
 async function copyReference(resource?: CommandResource, selectedResources?: CommandResourceList, templateName?: string): Promise<void> {
 	try {
+		logger?.debug('Copy reference command started', commandLogContext(resource, selectedResources, templateName));
 		const rendered = await renderReferences(resource, selectedResources, { templateName });
 		if (!rendered) {
+			logger?.debug('Copy reference command produced no rendered text');
 			return;
 		}
 
 		await vscode.env.clipboard.writeText(rendered);
+		logger?.info('Copied @-mention reference', {
+			templateName: templateName ?? getConfiguration().defaultTemplate,
+			characterCount: rendered.length,
+		});
 		if (getConfiguration().showCopyNotifications) {
 			vscode.window.setStatusBarMessage('Copied @-mention reference', 2000);
 		}
@@ -77,12 +83,18 @@ async function copyReference(resource?: CommandResource, selectedResources?: Com
 
 async function copyReferenceAs(resource?: CommandResource, selectedResources?: CommandResourceList): Promise<void> {
 	try {
+		logger?.debug('Copy reference as command started', commandLogContext(resource, selectedResources));
 		const selected = await pickRenderedTemplate(resource, selectedResources);
 		if (!selected) {
+			logger?.debug('Copy reference as command cancelled or produced no template');
 			return;
 		}
 
 		await vscode.env.clipboard.writeText(selected.rendered);
+		logger?.info('Copied @-mention reference with selected template', {
+			templateName: selected.templateName,
+			characterCount: selected.rendered.length,
+		});
 		if (getConfiguration().showCopyNotifications) {
 			vscode.window.setStatusBarMessage(`Copied ${selected.templateName} @-mention reference`, 2000);
 		}
@@ -101,11 +113,17 @@ async function copyReferenceFromExplorer(): Promise<void> {
 
 async function insertReference(resource?: CommandResource, selectedResources?: CommandResourceList): Promise<void> {
 	try {
+		logger?.debug('Insert reference command started', commandLogContext(resource, selectedResources));
 		const rendered = await renderReferences(resource, selectedResources, {});
 		if (!rendered) {
+			logger?.debug('Insert reference command produced no rendered text');
 			return;
 		}
-		await targetManager?.insert(rendered);
+		const inserted = await targetManager?.insert(rendered);
+		logger?.debug('Insert reference command finished', {
+			inserted: inserted === true,
+			characterCount: rendered.length,
+		});
 	} catch (error) {
 		handleError('Unable to insert @-mention reference', error);
 	}
@@ -128,17 +146,26 @@ export async function renderReferences(resource: CommandResource, selectedResour
 	const templateName = options.templateName ?? getConfiguration().defaultTemplate;
 	const template = getTemplate(templateName);
 	if (!template) {
+		logger?.warn(`Template "${templateName}" is not configured`);
 		vscode.window.showWarningMessage(`Template "${templateName}" is not configured.`);
 		return undefined;
 	}
 
 	const sources = resolveReferenceSources(resource, selectedResources);
 	if (sources.length === 0) {
+		logger?.debug('No editor or Explorer resource available for reference rendering', commandLogContext(resource, selectedResources, templateName));
 		vscode.window.setStatusBarMessage('No editor or Explorer resource is focused for @-mention reference', 2500);
 		return undefined;
 	}
 
-	return renderTemplateForSources(template, sources);
+	const rendered = await renderTemplateForSources(template, sources);
+	logger?.debug('Rendered @-mention references', {
+		templateName,
+		sourceCount: sources.length,
+		characterCount: rendered.length,
+		sources: sources.map(source => sourceLogContext(source)),
+	});
+	return rendered;
 }
 
 function resolveReferenceSources(resource: CommandResource, selectedResources: CommandResourceList): ReferenceSource[] {
@@ -186,11 +213,16 @@ async function getExplorerSelectedUris(restoreClipboard: boolean): Promise<vscod
 	try {
 		await vscode.commands.executeCommand('copyFilePath');
 		const copied = await vscode.env.clipboard.readText();
-		return copied
+		const uris = copied
 			.split(/\r?\n/)
 			.map(line => line.trim())
 			.filter(Boolean)
 			.map(selectedPath => vscode.Uri.file(selectedPath));
+		logger?.debug('Resolved Explorer selection through copyFilePath', {
+			count: uris.length,
+			restoreClipboard,
+		});
+		return uris;
 	} catch (error) {
 		logger?.warn('Unable to resolve Explorer selection', error);
 		return [];
@@ -205,11 +237,13 @@ async function pickRenderedTemplate(resource: CommandResource, selectedResources
 	const configuration = getConfiguration();
 	const invalid = validateTemplates(configuration.templates);
 	if (invalid.length > 0) {
+		logger?.warn('Ignoring invalid template entries', invalid);
 		vscode.window.showWarningMessage(`Ignoring invalid template entries: ${invalid.join(', ')}`);
 	}
 
 	const sources = resolveReferenceSources(resource, selectedResources);
 	if (sources.length === 0) {
+		logger?.debug('Template picker cancelled because no reference source is available', commandLogContext(resource, selectedResources));
 		vscode.window.setStatusBarMessage('No editor or Explorer resource is focused for @-mention reference', 2500);
 		return undefined;
 	}
@@ -232,13 +266,19 @@ async function pickRenderedTemplate(resource: CommandResource, selectedResources
 	}
 
 	if (failedTemplates.length > 0) {
+		logger?.warn('Template picker skipped entries that failed to render', failedTemplates);
 		vscode.window.showWarningMessage(`Could not render template entries: ${failedTemplates.join(', ')}`);
 	}
 	if (items.length === 0) {
+		logger?.warn('Template picker has no renderable templates');
 		vscode.window.showWarningMessage('No @-mention reference templates are available.');
 		return undefined;
 	}
 
+	logger?.debug('Showing rendered template picker', {
+		templateCount: items.length,
+		sourceCount: sources.length,
+	});
 	return vscode.window.showQuickPick(items, {
 		placeHolder: 'Choose the rendered @-mention reference to copy',
 		matchOnDescription: true,
@@ -250,6 +290,7 @@ async function selectDefaultTemplate(): Promise<void> {
 		const configuration = getConfiguration();
 		const invalid = validateTemplates(configuration.templates);
 		if (invalid.length > 0) {
+			logger?.warn('Ignoring invalid template entries while selecting default template', invalid);
 			vscode.window.showWarningMessage(`Ignoring invalid template entries: ${invalid.join(', ')}`);
 		}
 
@@ -264,6 +305,7 @@ async function selectDefaultTemplate(): Promise<void> {
 			}));
 
 		if (items.length === 0) {
+			logger?.warn('Default template picker has no selectable templates');
 			vscode.window.showWarningMessage('No @-mention reference templates are available.');
 			return;
 		}
@@ -274,10 +316,12 @@ async function selectDefaultTemplate(): Promise<void> {
 			matchOnDetail: true,
 		});
 		if (!selected) {
+			logger?.debug('Default template picker dismissed', { templateCount: items.length });
 			return;
 		}
 
 		await updateDefaultTemplate(selected.templateName);
+		logger?.info('Default @-mention template updated', { templateName: selected.templateName });
 		vscode.window.setStatusBarMessage(`Default @-mention template: ${selected.templateName}`, 2000);
 	} catch (error) {
 		handleError('Unable to select default @-mention template', error);
@@ -295,6 +339,10 @@ async function updateDefaultTemplate(templateName: string): Promise<void> {
 			: vscode.ConfigurationTarget.Global;
 
 	await configuration.update('defaultTemplate', templateName, target);
+	logger?.debug('Wrote default template setting', {
+		templateName,
+		target: configurationTargetLabel(target),
+	});
 }
 
 async function renderTemplateForSources(template: string, sources: readonly ReferenceSource[]): Promise<string> {
@@ -322,4 +370,44 @@ function handleError(message: string, error: unknown): void {
 	logger?.error(message, error);
 	const detail = error instanceof Error ? error.message : String(error);
 	vscode.window.showErrorMessage(`${message}: ${detail}`);
+}
+
+function commandLogContext(resource: CommandResource, selectedResources: CommandResourceList, templateName?: string): Record<string, unknown> {
+	const resourceUri = getUriFromCommandResource(resource);
+	const selectedUris = (selectedResources ?? []).flatMap(resourceItem => {
+		const uri = getUriFromCommandResource(resourceItem);
+		return uri ? [uri] : [];
+	});
+	return {
+		templateName,
+		resource: resourceUri ? uriLogValue(resourceUri) : undefined,
+		selectedResourceCount: selectedUris.length,
+		selectedResources: selectedUris.map(uriLogValue),
+		activeEditor: vscode.window.activeTextEditor ? uriLogValue(vscode.window.activeTextEditor.document.uri) : undefined,
+	};
+}
+
+function sourceLogContext(source: ReferenceSource): Record<string, unknown> {
+	return {
+		uri: uriLogValue(source.uri),
+		lineStart: source.location?.lineStart,
+		lineEnd: source.location?.lineEnd,
+	};
+}
+
+function uriLogValue(uri: vscode.Uri): string {
+	return uri.scheme === 'file' ? uri.fsPath : uri.toString();
+}
+
+function configurationTargetLabel(target: vscode.ConfigurationTarget): string {
+	switch (target) {
+		case vscode.ConfigurationTarget.Global:
+			return 'Global';
+		case vscode.ConfigurationTarget.Workspace:
+			return 'Workspace';
+		case vscode.ConfigurationTarget.WorkspaceFolder:
+			return 'WorkspaceFolder';
+		default:
+			return String(target);
+	}
 }

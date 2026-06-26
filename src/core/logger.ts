@@ -1,14 +1,25 @@
 import * as vscode from 'vscode';
 
-export class Logger implements vscode.Disposable {
+export interface LogSink {
+	debug(message: string, ...args: unknown[]): void;
+	info(message: string, ...args: unknown[]): void;
+	warn(message: string, ...args: unknown[]): void;
+	error(message: string, error?: unknown): void;
+}
+
+export class Logger implements vscode.Disposable, LogSink {
 	private readonly channel = vscode.window.createOutputChannel('At Mention Bridge', { log: true });
+
+	debug(message: string, ...args: unknown[]): void {
+		this.channel.debug(format(message, args));
+	}
 
 	info(message: string, ...args: unknown[]): void {
 		this.channel.info(format(message, args));
 	}
 
 	warn(message: string, ...args: unknown[]): void {
-		this.channel.warn(format(message, args));
+		this.channel.warn(format(message, args, { includeErrorStack: false }));
 	}
 
 	error(message: string, error?: unknown): void {
@@ -25,19 +36,26 @@ export class Logger implements vscode.Disposable {
 	}
 }
 
-function format(message: string, args: unknown[]): string {
+function format(message: string, args: unknown[], options: { includeErrorStack?: boolean } = {}): string {
 	if (args.length === 0) {
 		return message;
 	}
-	return `${message} ${args.map(formatArg).join(' ')}`;
+	return `${message} ${args.map(arg => formatArg(arg, options)).join(' ')}`;
 }
 
-function formatArg(arg: unknown): string {
+function formatArg(arg: unknown, options: { includeErrorStack?: boolean }): string {
 	if (arg instanceof Error) {
+		if (options.includeErrorStack === false) {
+			return arg.message;
+		}
 		return `${arg.message}\n${arg.stack ?? ''}`;
 	}
 	if (typeof arg === 'string') {
 		return arg;
 	}
-	return JSON.stringify(arg);
+	try {
+		return JSON.stringify(arg);
+	} catch {
+		return String(arg);
+	}
 }

@@ -7,7 +7,7 @@ import { builtInTemplates, configurationSection } from '../core/configuration';
 import { buildReferenceContext, selectionToLocation } from '../core/references';
 import { renderTemplate } from '../core/templates';
 import { truncateMiddle } from '../core/text';
-import { Logger } from '../core/logger';
+import { LogSink, Logger } from '../core/logger';
 import { ProcessAgentMatch, ProcessScanner, ProcessScannerHost, ProcessRow } from '../targets/processScanner';
 import { TerminalTargetManager, TerminalWindowApi } from '../targets/terminalTargets';
 
@@ -263,6 +263,51 @@ suite('At Mention Bridge', () => {
 		);
 	});
 
+	test('logs expected tmux probe failures at debug level', async () => {
+		const logger = new TestLogger();
+		const scanner = new ProcessScanner(new FakeProcessScannerHost({
+			processes: [
+				{
+					pid: 100,
+					ppid: 1,
+					command: 'tmux: client',
+					commandLine: '/usr/bin/tmux new-session -A -s workspace',
+				},
+			],
+			tmuxClients: new Error('Command failed: tmux list-clients\nno server running on /tmp/tmux-501/default'),
+		}), logger);
+
+		const matches = await scanner.findAgentProcesses(100);
+
+		assert.deepStrictEqual(matches, []);
+		assert.deepStrictEqual(logger.warns, []);
+		assert.deepStrictEqual(logger.debugs.map(entry => entry.message), [
+			'tmux scan skipped because tmux is not ready for this terminal',
+			'Process scan completed',
+		]);
+	});
+
+	test('warns for unexpected tmux scan failures', async () => {
+		const logger = new TestLogger();
+		const scanner = new ProcessScanner(new FakeProcessScannerHost({
+			processes: [
+				{
+					pid: 100,
+					ppid: 1,
+					command: 'tmux: client',
+					commandLine: '/usr/bin/tmux new-session -A -s workspace',
+				},
+			],
+			tmuxClients: new Error('permission denied'),
+		}), logger);
+
+		const matches = await scanner.findAgentProcesses(100);
+
+		assert.deepStrictEqual(matches, []);
+		assert.deepStrictEqual(logger.warns.map(entry => entry.message), ['Unable to scan tmux panes for agent processes']);
+		assert.strictEqual(logger.warns[0].args[0] instanceof Error, true);
+	});
+
 	test('reveals the selected target terminal', async () => {
 		const startEmitter = new vscode.EventEmitter<vscode.TerminalShellExecutionStartEvent>();
 		const subscriptions: vscode.Disposable[] = [];
@@ -355,6 +400,49 @@ suite('At Mention Bridge', () => {
 				'PID: 456',
 				'Click to select another target.',
 			].join('\n'),
+		);
+
+		manager.dispose();
+		for (const subscription of subscriptions) {
+			subscription.dispose();
+		}
+	});
+
+	test('does not repeat info logs for unchanged rediscovered process targets', async () => {
+		const subscriptions: vscode.Disposable[] = [];
+		const terminal = createTerminalStub('wrapped-agent', () => {}, 123);
+		const logger = new TestLogger();
+		const scanner = new FakeProcessScanner([{
+			agent: detectAgentFromCommand('claude')!,
+			pid: 456,
+			commandLine: 'claude',
+		}]);
+		const manager = new TerminalTargetManager(
+			createContextStub(subscriptions),
+			logger,
+			createTerminalApiStub({
+				terminals: [terminal],
+				activeTerminal: terminal,
+			}),
+			scanner,
+		);
+
+		await flushPromises();
+		await (manager as unknown as { inspectTerminal(terminal: vscode.Terminal): Promise<void> }).inspectTerminal(terminal);
+
+		assert.deepStrictEqual(
+			logger.infos.map(entry => entry.message),
+			['Registered agent target from process scan'],
+		);
+		assert.deepStrictEqual(
+			logger.debugs.filter(entry => entry.message === 'Agent target unchanged after process scan').map(entry => entry.args[0]),
+			[{
+				agentId: 'claude',
+				agentLabel: 'Claude Code',
+				terminalName: 'wrapped-agent',
+				source: 'process',
+				pid: 456,
+			}],
 		);
 
 		manager.dispose();
@@ -697,8 +785,8 @@ class FakeProcessScanner {
 class FakeProcessScannerHost implements ProcessScannerHost {
 	constructor(private readonly options: {
 		readonly processes: ProcessRow[];
-		readonly tmuxClients?: string;
-		readonly tmuxPanes?: string;
+		readonly tmuxClients?: string | Error;
+		readonly tmuxPanes?: string | Error;
 	}) {}
 
 	async listProcesses(): Promise<ProcessRow[]> {
@@ -706,11 +794,40 @@ class FakeProcessScannerHost implements ProcessScannerHost {
 	}
 
 	async listTmuxClients(): Promise<string> {
+		if (this.options.tmuxClients instanceof Error) {
+			throw this.options.tmuxClients;
+		}
 		return this.options.tmuxClients ?? '';
 	}
 
 	async listTmuxPanes(): Promise<string> {
+		if (this.options.tmuxPanes instanceof Error) {
+			throw this.options.tmuxPanes;
+		}
 		return this.options.tmuxPanes ?? '';
+	}
+}
+
+class TestLogger implements LogSink {
+	readonly debugs: { message: string; args: unknown[] }[] = [];
+	readonly infos: { message: string; args: unknown[] }[] = [];
+	readonly warns: { message: string; args: unknown[] }[] = [];
+	readonly errors: { message: string; error?: unknown }[] = [];
+
+	debug(message: string, ...args: unknown[]): void {
+		this.debugs.push({ message, args });
+	}
+
+	info(message: string, ...args: unknown[]): void {
+		this.infos.push({ message, args });
+	}
+
+	warn(message: string, ...args: unknown[]): void {
+		this.warns.push({ message, args });
+	}
+
+	error(message: string, error?: unknown): void {
+		this.errors.push({ message, error });
 	}
 }
 

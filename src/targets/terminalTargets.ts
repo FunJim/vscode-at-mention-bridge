@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { AgentDefinition, detectAgentFromCommand } from '../core/agents';
 import { getConfiguration } from '../core/configuration';
-import { Logger } from '../core/logger';
+import { LogSink } from '../core/logger';
 import { ProcessAgentMatch, ProcessScanner, revealTmuxPane, sendTextToTmuxPane, TmuxPaneTarget } from './processScanner';
 
 export interface TargetRecord {
@@ -38,6 +38,12 @@ interface ProcessScannerApi {
 	findExistingPids(pids: readonly number[]): Promise<Set<number>>;
 }
 
+interface TargetChange {
+	readonly target: TargetRecord;
+	readonly isNew: boolean;
+	readonly changedFields: readonly string[];
+}
+
 interface TargetQuickPickItem extends vscode.QuickPickItem {
 	readonly target: TargetRecord;
 }
@@ -55,9 +61,9 @@ export class TerminalTargetManager implements vscode.Disposable {
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
-		private readonly logger: Logger,
+		private readonly logger: LogSink,
 		private readonly terminalApi: TerminalWindowApi = vscode.window,
-		private readonly scanner: ProcessScannerApi = new ProcessScanner(),
+		private readonly scanner: ProcessScannerApi = new ProcessScanner(undefined, logger),
 	) {
 		this.statusBarItem = this.terminalApi.createStatusBarItem('target', vscode.StatusBarAlignment.Right, 90);
 		this.statusBarItem.command = 'vscode-at-mention-bridge.selectTarget';
@@ -109,9 +115,11 @@ export class TerminalTargetManager implements vscode.Disposable {
 		const selected = await this.showTargetQuickPick(items, activeTarget);
 
 		if (!selected) {
+			this.logger.debug('Target picker dismissed', { availableTargetCount: targets.length });
 			return;
 		}
 
+		this.logger.info('Target selected from picker', this.targetLogContext(selected.target));
 		await this.activateTarget(selected.target);
 	}
 
@@ -129,6 +137,11 @@ export class TerminalTargetManager implements vscode.Disposable {
 		const activeTarget = this.activeTarget;
 		const currentIndex = targets.findIndex(target => target.key === activeTarget?.key);
 		const next = targets[(currentIndex + 1) % targets.length];
+		this.logger.info('Switched to next target', {
+			from: activeTarget ? this.targetLogContext(activeTarget) : undefined,
+			to: this.targetLogContext(next),
+			targetCount: targets.length,
+		});
 		await this.activateTarget(next);
 	}
 
@@ -151,10 +164,12 @@ export class TerminalTargetManager implements vscode.Disposable {
 		}
 
 		if (!target) {
+			this.logger.debug('Insert cancelled because no target is selected');
 			return false;
 		}
 
 		if (!await this.isTargetActive(target)) {
+			this.logger.info('Removing inactive target before insert', this.targetLogContext(target));
 			await this.removeTarget(target.key);
 			vscode.window.showWarningMessage(`${target.agent.label} is no longer running in "${target.terminal.name}". Select an active agent terminal.`);
 			return false;
@@ -167,7 +182,10 @@ export class TerminalTargetManager implements vscode.Disposable {
 		} else {
 			target.terminal.sendText(textToInsert, false);
 		}
-		this.logger.info('Inserted reference into terminal', target.agent.id, target.terminal.name);
+		this.logger.info('Inserted reference into target', {
+			...this.targetLogContext(target),
+			characterCount: textToInsert.length,
+		});
 		return true;
 	}
 
@@ -192,6 +210,9 @@ export class TerminalTargetManager implements vscode.Disposable {
 
 		const target = this.preferredTargetForActiveTerminal(terminal);
 		if (target) {
+			if (target.key !== this.activeKey) {
+				this.logger.info('Auto-selected active terminal target', this.targetLogContext(target));
+			}
 			this.activeKey = target.key;
 			this.persistActiveKey();
 			this.updateStatusBar();
@@ -204,15 +225,20 @@ export class TerminalTargetManager implements vscode.Disposable {
 	private onShellExecution(event: vscode.TerminalShellExecutionStartEvent): void {
 		const agent = detectAgentFromCommand(event.execution.commandLine.value);
 		if (!agent) {
+			this.logger.debug('Shell execution did not match a supported agent; scheduling process scan', {
+				terminalName: event.terminal.name,
+				commandLine: event.execution.commandLine.value,
+			});
 			void this.inspectTerminal(event.terminal);
 			return;
 		}
 
-		this.addTarget(event.terminal, agent, 'shellExecution');
+		const change = this.addTarget(event.terminal, agent, 'shellExecution');
 		if (getConfiguration().autoLinkActiveAgentTerminal || !this.activeKey) {
 			this.activeKey = this.keyFor(event.terminal, agent.id);
 			this.persistActiveKey();
 		}
+		this.logTargetChange(change, 'shell execution');
 		this.updateStatusBar();
 	}
 
@@ -224,6 +250,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 
 		for (const target of [...this.targets.values()]) {
 			if (target.terminal === event.terminal && target.agent.id === agent.id) {
+				this.logger.info('Agent shell execution ended; removing target', this.targetLogContext(target));
 				void this.removeTarget(target.key);
 			}
 		}
@@ -237,20 +264,33 @@ export class TerminalTargetManager implements vscode.Disposable {
 		try {
 			const processId = await terminal.processId;
 			if (!processId) {
+				this.logger.debug('Skipping terminal process scan because VS Code has not assigned a process ID', {
+					terminalName: terminal.name,
+				});
 				return;
 			}
+			this.logger.debug('Inspecting terminal process tree', {
+				terminalName: terminal.name,
+				rootPid: processId,
+			});
 			const matches = await this.scanner.findAgentProcesses(processId);
 			this.removeSupersededShellTargets(terminal, matches);
 			for (const match of matches) {
-				this.addTarget(terminal, match.agent, 'process', match.pid, match);
+				const change = this.addTarget(terminal, match.agent, 'process', match.pid, match);
 				if (!this.activeKey || this.shouldAutoActivateMatch(terminal, match)) {
 					this.activeKey = this.keyFor(terminal, match.agent.id, match.tmuxPaneId, match.pid);
 					void this.persistActiveKey();
 				}
+				this.logTargetChange(change, 'process scan');
 			}
+			this.logger.debug('Terminal process scan finished', {
+				terminalName: terminal.name,
+				rootPid: processId,
+				matchCount: matches.length,
+			});
 			this.updateStatusBar();
 		} catch (error) {
-			this.logger.warn('Unable to inspect terminal process tree', error);
+			this.logger.warn(`Unable to inspect terminal process tree for "${terminal.name}"`, error);
 		} finally {
 			this.inspectingTerminals.delete(terminal);
 		}
@@ -262,9 +302,10 @@ export class TerminalTargetManager implements vscode.Disposable {
 		source: TargetRecord['source'],
 		pid?: number,
 		match?: Pick<ProcessAgentMatch, 'tmuxPaneId' | 'tmuxPanePid' | 'tmuxClient' | 'tmuxSessionName' | 'tmuxWindowId' | 'tmuxWindowIndex' | 'tmuxWindowName' | 'tmuxPaneIndex' | 'tmuxIsActivePane'>,
-	): void {
+	): TargetChange {
 		const key = this.keyFor(terminal, agent.id, match?.tmuxPaneId, pid);
 		const currentActiveTarget = this.activeKey ? this.targets.get(this.activeKey) : undefined;
+		const previous = this.targets.get(key);
 		const target = {
 			key,
 			terminal,
@@ -288,7 +329,11 @@ export class TerminalTargetManager implements vscode.Disposable {
 			this.activeKey = key;
 			void this.persistActiveKey();
 		}
-		this.logger.info('Discovered agent terminal', agent.id, terminal.name);
+		return {
+			target,
+			isNew: !previous,
+			changedFields: previous ? changedTargetFields(previous, target) : [],
+		};
 	}
 
 	private removeSupersededShellTargets(terminal: vscode.Terminal, matches: readonly ProcessAgentMatch[]): void {
@@ -300,6 +345,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 		for (const [key, target] of this.targets) {
 			if (target.terminal === terminal && target.source === 'shellExecution' && !target.tmuxPaneId && tmuxAgentIds.has(target.agent.id)) {
 				this.targets.delete(key);
+				this.logger.info('Removed superseded shell target after tmux pane discovery', this.targetLogContext(target));
 			}
 		}
 	}
@@ -339,6 +385,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 			if (target.pid && !livePids.has(target.pid)) {
 				this.targets.delete(target.key);
 				changed = true;
+				this.logger.info('Removed inactive process target', this.targetLogContext(target));
 			}
 		}
 
@@ -393,6 +440,7 @@ export class TerminalTargetManager implements vscode.Disposable {
 		for (const [key, target] of this.targets) {
 			if (target.terminal === terminal) {
 				this.targets.delete(key);
+				this.logger.info('Removed target because terminal closed', this.targetLogContext(target));
 			}
 		}
 		if (this.activeKey && !this.targets.has(this.activeKey)) {
@@ -609,15 +657,69 @@ export class TerminalTargetManager implements vscode.Disposable {
 		].filter(Boolean).join('\n');
 	}
 
+	private logTargetChange(change: TargetChange, discoveryMethod: string): void {
+		if (change.isNew) {
+			this.logger.info(`Registered agent target from ${discoveryMethod}`, this.targetLogContext(change.target));
+			return;
+		}
+		if (change.changedFields.length > 0) {
+			this.logger.info(`Updated agent target from ${discoveryMethod}`, {
+				...this.targetLogContext(change.target),
+				changedFields: change.changedFields,
+			});
+			return;
+		}
+		this.logger.debug(`Agent target unchanged after ${discoveryMethod}`, this.targetLogContext(change.target));
+	}
+
+	private targetLogContext(target: TargetRecord): Record<string, unknown> {
+		return omitUndefined({
+			agentId: target.agent.id,
+			agentLabel: target.agent.label,
+			terminalName: target.terminal.name,
+			source: target.source,
+			pid: target.pid,
+			tmuxSession: target.tmuxSessionName,
+			tmuxWindow: this.tmuxWindowLogLabel(target),
+			tmuxPane: target.tmuxPaneId,
+			tmuxPanePid: target.tmuxPanePid,
+			tmuxPaneIndex: target.tmuxPaneIndex,
+			tmuxClient: target.tmuxClient,
+			tmuxIsActivePane: target.tmuxIsActivePane,
+		});
+	}
+
+	private targetLogLabel(target: TargetRecord): string {
+		return [
+			`${target.agent.label}`,
+			target.pid ? `PID ${target.pid}` : undefined,
+			target.tmuxPaneId ? `pane ${target.tmuxPaneId}` : undefined,
+			target.tmuxSessionName ? `session ${target.tmuxSessionName}` : undefined,
+			`terminal "${target.terminal.name}"`,
+		].filter(Boolean).join(', ');
+	}
+
+	private tmuxWindowLogLabel(target: TargetRecord): string | undefined {
+		if (!target.tmuxWindowId && !target.tmuxWindowIndex && !target.tmuxWindowName) {
+			return undefined;
+		}
+		const index = target.tmuxWindowIndex ?? target.tmuxWindowId;
+		return [
+			index ? `#${index}` : undefined,
+			target.tmuxWindowName,
+		].filter(Boolean).join(' ');
+	}
+
 	private async revealTarget(target: TargetRecord): Promise<void> {
 		target.terminal.show(false);
 		if (!target.tmuxPaneId) {
 			return;
 		}
 		try {
+			this.logger.debug('Revealing tmux pane for target', this.targetLogContext(target));
 			await revealTmuxPane(this.tmuxPaneTarget(target));
 		} catch (error) {
-			this.logger.warn('Unable to reveal tmux pane', error);
+			this.logger.warn(`Unable to reveal tmux pane for ${this.targetLogLabel(target)}`, error);
 		}
 	}
 
@@ -653,4 +755,25 @@ function compareTmuxIndex(first: string | undefined, second: string | undefined)
 		return firstNumber - secondNumber;
 	}
 	return (first ?? '').localeCompare(second ?? '');
+}
+
+function changedTargetFields(previous: TargetRecord, next: TargetRecord): string[] {
+	const fields: readonly (keyof TargetRecord)[] = [
+		'pid',
+		'tmuxPaneId',
+		'tmuxPanePid',
+		'tmuxClient',
+		'tmuxSessionName',
+		'tmuxWindowId',
+		'tmuxWindowIndex',
+		'tmuxWindowName',
+		'tmuxPaneIndex',
+		'tmuxIsActivePane',
+		'source',
+	];
+	return fields.filter(field => previous[field] !== next[field]);
+}
+
+function omitUndefined(values: Record<string, unknown>): Record<string, unknown> {
+	return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 }
