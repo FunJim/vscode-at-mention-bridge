@@ -2,7 +2,7 @@
   "name": "vscode-at-mention-bridge",
   "displayName": "At Mention Bridge",
   "description": "Copy and insert AI-agent @-mention references for files, folders, and editor selections.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "funjim",
   "license": "MIT",
   "repository": {
