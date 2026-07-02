@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { renderReferences } from '../extension';
@@ -30,6 +32,25 @@ suite('At Mention Bridge', () => {
 		assert.strictEqual(context.relativePath, 'src/');
 		assert.strictEqual(context.fileName, 'src/');
 		assert.strictEqual(renderTemplate(builtInTemplates.claudeStyle, context), '@src/');
+	});
+
+	test('renders resolved real paths for symlinked references', async () => {
+		const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'at-mention-bridge-'));
+		const targetPath = path.join(tempDirectory, 'target.ts');
+		const symlinkPath = path.join(tempDirectory, 'linked.ts');
+		await fs.writeFile(targetPath, 'export const value = 1;\n');
+		await fs.symlink(targetPath, symlinkPath);
+
+		try {
+			const context = await buildReferenceContext(vscode.Uri.file(symlinkPath));
+			const realTargetPath = await fs.realpath(targetPath);
+
+			assert.strictEqual(context.absolutePath, symlinkPath.split(path.sep).join('/'));
+			assert.strictEqual(context.realPath, realTargetPath.split(path.sep).join('/'));
+			assert.strictEqual(renderTemplate('${realPath}${locationSuffix}', context), realTargetPath.split(path.sep).join('/'));
+		} finally {
+			await fs.rm(tempDirectory, { recursive: true, force: true });
+		}
 	});
 
 	test('converts selections to inclusive one-indexed line ranges', () => {

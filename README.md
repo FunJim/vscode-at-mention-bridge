@@ -74,6 +74,7 @@ Templates are JavaScript template-literal strings. Available variables:
 | --- | --- |
 | `${relativePath}` | File or folder path relative to the workspace root, or an absolute path when outside the workspace. Folder paths end with `/`. |
 | `${absolutePath}` | Absolute file or folder path. Folder paths end with `/`. |
+| `${realPath}` | Resolved absolute path after following symlinks. Folder paths end with `/`. |
 | `${fileName}` | Basename such as `README.md` or `src/`. |
 | `${locationSuffix}` | `#24-26`, `#24`, or an empty string. |
 | `${lineStart}` | 1-indexed inclusive selection start line. |

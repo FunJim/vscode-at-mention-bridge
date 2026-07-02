@@ -4,6 +4,7 @@ export function renderTemplate(template: string, context: ReferenceContext): str
 	const templateFunction = new Function(
 		'relativePath',
 		'absolutePath',
+		'realPath',
 		'fileName',
 		'locationSuffix',
 		'lineStart',
@@ -15,6 +16,7 @@ export function renderTemplate(template: string, context: ReferenceContext): str
 	return String(templateFunction(
 		context.relativePath,
 		context.absolutePath,
+		context.realPath,
 		context.fileName,
 		context.locationSuffix,
 		context.lineStart,

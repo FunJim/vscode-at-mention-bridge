@@ -155,7 +155,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "markdownDescription": "Named JavaScript template-literal strings for rendering references. Built-in templates: `claudeStyle` renders `@${relativePath}${locationSuffix}` and `codexStyle` renders `[${fileName}${locationSuffix}](${absolutePath}${locationSuffix})`. Available variables: `${relativePath}`, `${absolutePath}`, `${fileName}`, `${locationSuffix}`, `${lineStart}`, `${lineEnd}`, and `${isDirectory}`. Only use templates you trust."
+          "markdownDescription": "Named JavaScript template-literal strings for rendering references. Built-in templates: `claudeStyle` renders `@${relativePath}${locationSuffix}` and `codexStyle` renders `[${fileName}${locationSuffix}](${absolutePath}${locationSuffix})`. Available variables: `${relativePath}`, `${absolutePath}`, `${realPath}`, `${fileName}`, `${locationSuffix}`, `${lineStart}`, `${lineEnd}`, and `${isDirectory}`. Only use templates you trust."
         },
         "atMentionBridge.autoLinkActiveAgentTerminal": {
           "type": "boolean",

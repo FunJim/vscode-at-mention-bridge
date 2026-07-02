@@ -1,3 +1,4 @@
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -10,6 +11,7 @@ export interface ReferenceContext extends ReferenceLocation {
 	readonly uri: vscode.Uri;
 	readonly relativePath: string;
 	readonly absolutePath: string;
+	readonly realPath: string;
 	readonly fileName: string;
 	readonly locationSuffix: string;
 	readonly isDirectory: boolean;
@@ -40,6 +42,7 @@ export async function buildReferenceContext(uri: vscode.Uri, location: Reference
 	const stat = await vscode.workspace.fs.stat(uri);
 	const isDirectory = (stat.type & vscode.FileType.Directory) !== 0;
 	const absolutePath = withDirectorySlash(uri.fsPath, isDirectory);
+	const realPath = withDirectorySlash(await fs.realpath(uri.fsPath), isDirectory);
 	const relativePath = toRelativePath(uri, isDirectory);
 	const fileName = path.basename(uri.fsPath) + (isDirectory ? '/' : '');
 	const locationSuffix = location.lineStart
@@ -52,6 +55,7 @@ export async function buildReferenceContext(uri: vscode.Uri, location: Reference
 		uri,
 		relativePath,
 		absolutePath,
+		realPath,
 		fileName,
 		locationSuffix,
 		lineStart: location.lineStart,
