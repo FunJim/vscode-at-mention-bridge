@@ -9,6 +9,14 @@
   <br>
 </h1>
 
+<p align="center">
+  <a href="https://github.com/FunJim/vscode-at-mention-bridge/raw/main/media/at-mention-bridge-demo.mp4">
+    <img src="https://raw.githubusercontent.com/FunJim/vscode-at-mention-bridge/refs/heads/main/media/at-mention-bridge-demo-poster.jpg" alt="At Mention Bridge demo video: select code, press Option+K, and the @-reference lands in your terminal agent's prompt" width="800">
+  </a>
+  <br>
+  <sub>▶ Click to watch the 38-second demo (with sound)</sub>
+</p>
+
 At Mention Bridge Extension for Visual Studio Code copies and inserts references that agent CLIs can understand. Use it from the editor or Explorer to send the current file, folder, or selected lines to Claude Code, OpenAI Codex CLI, Gemini CLI, OpenCode, Aider, and other terminal agents.
 
 ## Features
